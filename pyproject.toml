@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openpeerreview"
+version = "0.1.0"
+description = "Adversarial peer-review pipeline for academic PDFs, powered by Anthropic Claude."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [{name = "Steven Denney"}]
+keywords = ["peer-review", "llm", "claude", "anthropic", "academic", "pdf"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Text Processing",
+]
+dependencies = [
+    "anthropic>=0.40.0",
+    "pypdf",
+    "reportlab",
+    "requests",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[project.scripts]
+openpeerreview = "openpeerreview.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/scdenney/open-peer-review"
+Upstream = "https://github.com/isitcredible/reviewer2"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+openpeerreview = [
+    "prompts/*.txt",
+    "prompts/resources/*.txt",
+    "prompts/resources/*.pdf",
+    "data/*.csv",
+]

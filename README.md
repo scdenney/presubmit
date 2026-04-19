@@ -1,0 +1,143 @@
+# openpeerreview
+
+**Adversarial peer review for academic PDFs, powered by Anthropic Claude.**
+
+A derivative of [`reviewer2`](https://github.com/isitcredible/reviewer2) (Apache-2.0, © The Catalogue of Errors Ltd) with the LLM client layer rewritten to call Claude instead of Gemini. All prompts, pipeline structure, and non-LLM tooling (PDF merge, code ingestion, Mathpix math OCR) are ported largely verbatim from upstream; only the API client and model routing are new.
+
+> **If you are deciding between this and upstream:** try upstream `reviewer2` on Gemini first if you can. It is the reference implementation, has been benchmarked against 5 alternatives (15 wins / 4 ties / 1 loss in the accompanying paper), and uses Gemini features (grounded search, permissive safety overrides) that this port cannot fully replicate. Use `openpeerreview` when you need Claude (budget, stack, policy preference) or want to run the pipeline against a different model family for comparison. See "Known trade-offs" below.
+
+## What it does
+
+Takes a manuscript PDF and produces a plain-text critical review via a 30+ stage chain of LLM calls. The chain runs an adversarial structure:
+
+- **Red Team** agents (Breaker, Butcher, Shredder, Collector, Void) read the paper aggressively and list every flaw they can find, with extensive quotes.
+- **Blue Team** defends: goes through each red-team issue and produces an honest defence where one exists.
+- **Verification cascade**: numbers audit, assessment agent, list compilation; then a fact-checker walks citations and external claims, and an external-check agent validates quotes.
+- **Review assembly + legal pass**: reviewer agent synthesises; a second cross-check + reviser cleans; a legal pass softens any claim-like language.
+- **Writer Mode** (default on): alchemist + polisher + proofreader + copyeditor produce a polished author-facing version of the review.
+
+Output is one `report.txt` plus, optionally, an editor's note and copyediting suggestions. Runs are **resumable**: deleting a stage file in the work directory forces that stage (and dependents) to re-run on the next invocation.
+
+## Requirements
+
+- Python 3.10+
+- An Anthropic API key ([console.anthropic.com](https://console.anthropic.com/))
+- `qpdf` on `PATH` for PDF preprocessing (optional; python fallback exists)
+- (Optional) A Mathpix account for the math-audit add-on
+
+## Install
+
+Clone and install in editable mode:
+
+```bash
+git clone https://github.com/scdenney/open-peer-review
+cd open-peer-review
+pip install -e .
+```
+
+## Quickstart
+
+```bash
+export ANTHROPIC_API_KEY=your_key_here
+openpeerreview paper.pdf -o report.txt
+```
+
+A default run hits the API 30–40 times. Wall time is ~15–45 minutes depending on paper length and how much Extended Thinking the heavy-reasoning stages use. Cost depends on which Claude tier each stage routes to (see `src/openpeerreview/core.py` → `MODELS`).
+
+For a cheap smoke run, force every stage to Haiku:
+
+```bash
+CLAUDE_MODEL_OVERRIDE=haiku openpeerreview paper.pdf -o smoke.txt
+```
+
+## Known trade-offs vs. upstream Gemini
+
+This port is not a perfect replica. Four places the Gemini and Claude implementations diverge:
+
+### 1. Safety policy
+
+Upstream disables four Gemini harm categories (`HARM_CATEGORY_HATE_SPEECH`, `DANGEROUS_CONTENT`, `SEXUALLY_EXPLICIT`, `HARASSMENT`) with `BLOCK_NONE` thresholds so the Red Team can use blunt, adversarial language without being filtered. **Claude has no equivalent override.** Prompts that read as *ad hominem attack on the author* or *fraud accusation* may be refused by Claude even though the *task* (critical academic peer review) is clearly legitimate.
+
+**What this means in practice:** Red Team prompts ported verbatim occasionally trigger `stop_reason == "refusal"`. The Python client raises a `FATAL: Claude refused` error when that happens. Two mitigations:
+
+- **Prompt softening.** Rephrase adversarial language to target the *manuscript's claims* rather than the *authors' character* ("the argument breaks on X" rather than "this is fraudulent"). The substantive pressure on the paper is preserved; only the rhetoric changes.
+- **Retry with a heavier model.** Opus is more willing to engage with pointed critique than Haiku.
+
+If you hit systematic refusals on a specific stage, file an issue with the stage ID and the prompt text.
+
+### 2. Grounded web search
+
+Upstream stage `00a_metadata` uses Gemini's `GoogleSearch` tool to look up the paper on the open web when metadata is ambiguous (for example, to resolve a title to a DOI, find the published citation, verify an author affiliation). **Claude has no native grounded-search tool.** The port accepts the `use_search=True` kwarg but currently *ignores it* and logs a warning.
+
+**What this costs:** metadata extraction on unpublished manuscripts is unaffected (the PDF itself is the source). For published papers where the PDF lacks a clean citation block, the metadata fields (DOI, canonical venue, author affiliation) degrade: Claude can only use what's visible in the PDF. Downstream stages are unaffected.
+
+**Workarounds if you need it:**
+- Add a Tavily, Brave, or SerpAPI call inside `call_claude(..., use_search=True)` — the hook is there; the implementation is a TODO.
+- Run inside Claude Code (where Claude has a `WebSearch` tool) and wire that through.
+- Accept degraded metadata and hand-edit the citation field before writing the report.
+
+### 3. Extended thinking semantics
+
+Gemini's `ThinkingConfig` takes either a `thinking_budget` (integer token count, or `-1` for "unbounded") or a `thinking_level` ("low" / "medium" / "high"). Claude's extended thinking takes `budget_tokens` only.
+
+The port translates:
+- `thinking_budget=N` → `{"type": "enabled", "budget_tokens": N}` if `N >= 1024`, else disabled
+- `thinking_budget=-1` → `budget_tokens=12000` (approximate "unbounded")
+- `thinking_level="low" / "medium" / "high"` → `budget_tokens=2000 / 5000 / 10000`
+
+The `high` setting is deliberately conservative — Claude's thinking tokens are priced per-token output, so ramping higher than 10k on 30+ stages adds up fast. If you find specific stages under-thinking, bump the `THINKING_LEVEL_TO_BUDGET` map in `core.py`.
+
+Also: Claude's extended thinking **requires `temperature=1`**. The port overrides any caller-supplied temperature when thinking is enabled. Stages that rely on `temperature=0.0` for determinism will get `temperature=1.0` silently whenever they also use thinking. In practice this has minimal impact on output consistency for the review task.
+
+### 4. Model tier mapping
+
+Upstream assigns stages to specific Gemini model keys (`flash_lite`, `flash_2_5`, `pro_2_5`, `pro_3`, `pro_3_1`). The port maps these to Claude as follows:
+
+| Upstream key   | Claude model         | Use case                              |
+|----------------|----------------------|---------------------------------------|
+| `flash_lite`   | `claude-haiku-4-5`   | Light validators, structure checks    |
+| `flash_2_5`    | `claude-sonnet-4-6`  | Mid-tier reasoning (Red Team support) |
+| `pro_2_5`      | `claude-sonnet-4-6`  | Red Team primary                      |
+| `pro_3_1`      | `claude-opus-4-7`    | Heavy reasoning, review synthesis     |
+
+This mapping is a starting point, not a calibrated equivalence. Claude Sonnet is plausibly a closer stand-in for Gemini Pro 2.5 than for Flash; Claude Opus is plausibly overkill for some Gemini Pro 3.1 stages. Treat it as a tunable dial in `src/openpeerreview/core.py`.
+
+## Cost tracking
+
+Upstream ships a `pricing.csv` keyed by Gemini model names. **This port has not updated that file for Claude pricing.** The `calculate_cost()` helper will therefore report `MISSING` for every stage until you populate `src/openpeerreview/data/pricing.csv` with Claude per-million-token rates. This is a known TODO — costs are still tracked by the API dashboard; only the end-of-run report is affected.
+
+## What's the same as upstream
+
+- All 46 stage prompts (except the persona name change "Reviewer 2" → "Critical Reviewer" per the upstream trademark NOTICE).
+- Pipeline sequencing, checkpoint resumability, work-dir layout.
+- PDF preprocessing (qpdf + pypdf fallback), supplement merging, code-zip ingestion.
+- Mathpix math-OCR integration (opt-in).
+- Output formats: plain-text report, optional editor's note, optional copyediting suggestions.
+- Report rendering (`render_text.py`).
+
+## Related peer-review automation systems
+
+For context on where this sits in the landscape of LLM-based review tooling:
+
+- **[reviewer2](https://github.com/isitcredible/reviewer2)** (this project's upstream) — Gemini, adversarial + verification. The reference implementation.
+- **[MARG](https://arxiv.org/abs/2401.04259)** (D'Arcy et al. 2024) — Multi-Agent Review Generation. Splits a paper into sections, assigns specialist agents (clarity, experiments, related work), produces aggregated feedback.
+- **Liang et al. 2023, "Can Large Language Models Provide Useful Feedback on Research Papers?"** (Stanford) — single-shot GPT-4 review; benchmarked against human reviewers on Nature Portfolio / ICLR papers.
+- **Yuan, Liu & Neubig 2022, "Can We Automate Scientific Reviewing?"** (CMU) — earlier encoder-decoder approach; useful baseline for what pre-LLM automation looked like.
+- **OpenReview automation** — various ML-conference prototypes for reviewer-paper matching, novelty flagging, and reference completeness checks. Not a drop-in pipeline.
+- **[AgentReview](https://arxiv.org/abs/2406.12708)** (Jin et al. 2024) — simulates reviewer-AC-author loops rather than producing a single review.
+
+These differ from `openpeerreview` in two axes: (a) whether they run an **adversarial+verification** cascade (reviewer2 and its fork do; most others produce a single integrated review) and (b) whether they are a **practical CLI/service** versus a **research prototype**. Our port inherits upstream's adversarial architecture and CLI mode. The Liang et al. paper and MARG are worth reading if you want to understand why pure "ask the LLM once" approaches tend to miss the subtle methodological issues reviewer2 catches.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE). See [NOTICE](NOTICE) for upstream attribution and trademark notes.
+
+## Status
+
+**Beta.** The port compiles and the API surface is covered, but:
+- No end-to-end smoke-tested run has been recorded yet.
+- Pricing CSV is stale (Claude rates not populated).
+- The `use_search` replacement is a stub.
+- Red Team prompts have not been systematically softened for Claude's safety policy — expect some refusals on first runs; file issues.
+
+Contributions welcome. If you run a full review and can share a timing + refusal-incidence report, that's especially useful.

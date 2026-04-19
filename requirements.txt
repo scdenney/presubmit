@@ -1,0 +1,8 @@
+# Runtime dependencies.
+# Authoritative source is pyproject.toml; this file is for `pip install -r`
+# convenience and for CI cache keys.
+
+anthropic>=0.40.0
+pypdf
+reportlab
+requests

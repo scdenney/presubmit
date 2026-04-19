@@ -1,0 +1,40 @@
+openpeerreview
+Copyright 2026 Steven Denney
+
+Licensed under the Apache License, Version 2.0. See LICENSE for terms.
+
+-------------------------------------------------------------------------------
+Upstream attribution
+-------------------------------------------------------------------------------
+
+This project is a derivative work of `reviewer2` by The Catalogue of Errors Ltd
+(https://github.com/isitcredible/reviewer2), Copyright 2026, also released
+under Apache-2.0. Prompts, pipeline structure, and non-LLM PDF tooling
+originate from that upstream. The LLM client layer has been rewritten to
+target Anthropic Claude instead of Google Gemini.
+
+The names "Reviewer 2", "isitcredible.com", and "The Catalogue of Errors"
+are trademarks of The Catalogue of Errors Ltd. Per upstream's NOTICE,
+the Apache License 2.0 does not grant permission to use these names. This
+derivative therefore ships under the name `openpeerreview` with no use of
+the upstream trademarks, logos, or trade dress. Internal prompt references
+that previously named "Reviewer 2" as a persona have been renamed
+"Critical Reviewer".
+
+-------------------------------------------------------------------------------
+Third-party components
+-------------------------------------------------------------------------------
+
+This software depends on the following third-party packages at runtime.
+Their licenses apply to their respective source code and are not altered
+by this project's license.
+
+  anthropic              Apache-2.0
+  pypdf                  BSD-3-Clause
+  reportlab              BSD
+  requests               Apache-2.0
+
+Optional external binaries (not bundled, detected at runtime):
+
+  qpdf                   Apache-2.0
+  ghostscript (gs)       AGPL-3.0
