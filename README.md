@@ -1,10 +1,10 @@
-# openpeerreview
+# presubmit
 
 **Adversarial peer review for academic PDFs, powered by Anthropic Claude.**
 
 A derivative of [`reviewer2`](https://github.com/isitcredible/reviewer2) (Apache-2.0, © The Catalogue of Errors Ltd) with the LLM client layer rewritten to call Claude instead of Gemini. All prompts, pipeline structure, and non-LLM tooling (PDF merge, code ingestion, Mathpix math OCR) are ported largely verbatim from upstream; only the API client and model routing are new.
 
-> **If you are deciding between this and upstream:** try upstream `reviewer2` on Gemini first if you can. It is the reference implementation, has been benchmarked against 5 alternatives (15 wins / 4 ties / 1 loss in the accompanying paper), and uses Gemini features (grounded search, permissive safety overrides) that this port cannot fully replicate. Use `openpeerreview` when you need Claude (budget, stack, policy preference) or want to run the pipeline against a different model family for comparison. See "Known trade-offs" below.
+> **If you are deciding between this and upstream:** try upstream `reviewer2` on Gemini first if you can. It is the reference implementation, has been benchmarked against 5 alternatives (15 wins / 4 ties / 1 loss in the accompanying paper), and uses Gemini features (grounded search, permissive safety overrides) that this port cannot fully replicate. Use `presubmit` when you need Claude (budget, stack, policy preference) or want to run the pipeline against a different model family for comparison. See "Known trade-offs" below.
 
 ## What it does
 
@@ -30,8 +30,8 @@ Output is one `report.txt` plus, optionally, an editor's note and copyediting su
 Clone and install in editable mode:
 
 ```bash
-git clone https://github.com/scdenney/open-peer-review
-cd open-peer-review
+git clone https://github.com/scdenney/presubmit
+cd presubmit
 pip install -e .
 ```
 
@@ -39,15 +39,15 @@ pip install -e .
 
 ```bash
 export ANTHROPIC_API_KEY=your_key_here
-openpeerreview paper.pdf -o report.txt
+presubmit paper.pdf -o report.txt
 ```
 
-A default run hits the API 30–40 times. Wall time is ~15–45 minutes depending on paper length and how much Extended Thinking the heavy-reasoning stages use. Cost depends on which Claude tier each stage routes to (see `src/openpeerreview/core.py` → `MODELS`).
+A default run hits the API 30–40 times. Wall time is ~15–45 minutes depending on paper length and how much Extended Thinking the heavy-reasoning stages use. Cost depends on which Claude tier each stage routes to (see `src/presubmit/core.py` → `MODELS`).
 
 For a cheap smoke run, force every stage to Haiku:
 
 ```bash
-CLAUDE_MODEL_OVERRIDE=haiku openpeerreview paper.pdf -o smoke.txt
+CLAUDE_MODEL_OVERRIDE=haiku presubmit paper.pdf -o smoke.txt
 ```
 
 ## Known trade-offs vs. upstream Gemini
@@ -100,11 +100,11 @@ Upstream assigns stages to specific Gemini model keys (`flash_lite`, `flash_2_5`
 | `pro_2_5`      | `claude-sonnet-4-6`  | Red Team primary                      |
 | `pro_3_1`      | `claude-opus-4-7`    | Heavy reasoning, review synthesis     |
 
-This mapping is a starting point, not a calibrated equivalence. Claude Sonnet is plausibly a closer stand-in for Gemini Pro 2.5 than for Flash; Claude Opus is plausibly overkill for some Gemini Pro 3.1 stages. Treat it as a tunable dial in `src/openpeerreview/core.py`.
+This mapping is a starting point, not a calibrated equivalence. Claude Sonnet is plausibly a closer stand-in for Gemini Pro 2.5 than for Flash; Claude Opus is plausibly overkill for some Gemini Pro 3.1 stages. Treat it as a tunable dial in `src/presubmit/core.py`.
 
 ## Cost tracking
 
-Upstream ships a `pricing.csv` keyed by Gemini model names. **This port has not updated that file for Claude pricing.** The `calculate_cost()` helper will therefore report `MISSING` for every stage until you populate `src/openpeerreview/data/pricing.csv` with Claude per-million-token rates. This is a known TODO — costs are still tracked by the API dashboard; only the end-of-run report is affected.
+Upstream ships a `pricing.csv` keyed by Gemini model names. **This port has not updated that file for Claude pricing.** The `calculate_cost()` helper will therefore report `MISSING` for every stage until you populate `src/presubmit/data/pricing.csv` with Claude per-million-token rates. This is a known TODO — costs are still tracked by the API dashboard; only the end-of-run report is affected.
 
 ## What's the same as upstream
 
@@ -126,7 +126,7 @@ For context on where this sits in the landscape of LLM-based review tooling:
 - **OpenReview automation** — various ML-conference prototypes for reviewer-paper matching, novelty flagging, and reference completeness checks. Not a drop-in pipeline.
 - **[AgentReview](https://arxiv.org/abs/2406.12708)** (Jin et al. 2024) — simulates reviewer-AC-author loops rather than producing a single review.
 
-These differ from `openpeerreview` in two axes: (a) whether they run an **adversarial+verification** cascade (reviewer2 and its fork do; most others produce a single integrated review) and (b) whether they are a **practical CLI/service** versus a **research prototype**. Our port inherits upstream's adversarial architecture and CLI mode. The Liang et al. paper and MARG are worth reading if you want to understand why pure "ask the LLM once" approaches tend to miss the subtle methodological issues reviewer2 catches.
+These differ from `presubmit` in two axes: (a) whether they run an **adversarial+verification** cascade (reviewer2 and its fork do; most others produce a single integrated review) and (b) whether they are a **practical CLI/service** versus a **research prototype**. Our port inherits upstream's adversarial architecture and CLI mode. The Liang et al. paper and MARG are worth reading if you want to understand why pure "ask the LLM once" approaches tend to miss the subtle methodological issues reviewer2 catches.
 
 ## License
 

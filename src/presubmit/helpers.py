@@ -8,8 +8,8 @@ import os
 import re
 import zipfile
 
-from openpeerreview.core import call_gemini, load_prompt
-from openpeerreview.paths import prompts_dir, pricing_csv
+from presubmit.core import call_gemini, load_prompt
+from presubmit.paths import prompts_dir, pricing_csv
 
 CODE_ALLOWED_EXTENSIONS = {
     ".py", ".r", ".do", ".ado", ".rmd", ".ipynb", ".jl", ".m",

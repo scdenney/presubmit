@@ -22,7 +22,7 @@ from pathlib import Path
 import anthropic
 from pypdf import PdfReader, PdfWriter
 
-from openpeerreview.paths import prompts_dir
+from presubmit.paths import prompts_dir
 
 # Per-call usage records. Appended by call_claude, consumed by helpers.calculate_cost.
 USAGE_LOG: list[dict] = []
@@ -340,7 +340,7 @@ def load_prompt(prompt_path):
     """Load a prompt file and inline the ``{{OUTPUT_FORMAT}}`` resource if referenced.
 
     A relative path of the form ``prompts/<name>`` resolves against the packaged
-    prompts directory (overridable via ``OPENPEERREVIEW_PROMPTS_DIR``), so pipeline
+    prompts directory (overridable via ``PRESUBMIT_PROMPTS_DIR``), so pipeline
     callers can keep using short literals regardless of cwd.
     """
     path = Path(prompt_path)

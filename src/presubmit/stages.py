@@ -10,14 +10,14 @@ from __future__ import annotations
 import json
 import os
 
-from openpeerreview.core import call_gemini, load_prompt, save_output
-from openpeerreview.helpers import (
+from presubmit.core import call_gemini, load_prompt, save_output
+from presubmit.helpers import (
     extract_info_fields,
     get_citation_block,
     inject_page_numbers,
     load_instruction,
 )
-from openpeerreview.mathpix import extract_equations_mathpix
+from presubmit.mathpix import extract_equations_mathpix
 
 APPENDIX_INJECTION = """
 

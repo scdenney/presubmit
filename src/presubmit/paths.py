@@ -13,16 +13,16 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 
 
 def prompts_dir() -> Path:
-    """Directory containing stage prompts. Override: ``OPENPEERREVIEW_PROMPTS_DIR``."""
-    override = os.environ.get("OPENPEERREVIEW_PROMPTS_DIR")
+    """Directory containing stage prompts. Override: ``PRESUBMIT_PROMPTS_DIR``."""
+    override = os.environ.get("PRESUBMIT_PROMPTS_DIR")
     if override:
         return Path(override)
     return _PACKAGE_DIR / "prompts"
 
 
 def pricing_csv() -> Path:
-    """CSV mapping Gemini model → $/M-tokens. Override: ``OPENPEERREVIEW_PRICING_CSV``."""
-    override = os.environ.get("OPENPEERREVIEW_PRICING_CSV")
+    """CSV mapping Gemini model → $/M-tokens. Override: ``PRESUBMIT_PRICING_CSV``."""
+    override = os.environ.get("PRESUBMIT_PRICING_CSV")
     if override:
         return Path(override)
     return _PACKAGE_DIR / "data" / "pricing.csv"

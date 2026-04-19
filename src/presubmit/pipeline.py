@@ -1,7 +1,7 @@
-"""Pipeline orchestrator for openpeerreview.
+"""Pipeline orchestrator for presubmit.
 
 Public entry point: ``run(pdf_path, work_dir, ...)``. The CLI in
-``openpeerreview.cli`` is a thin wrapper around it.
+``presubmit.cli`` is a thin wrapper around it.
 
 The pipeline is resumable: stage outputs land as ``.txt`` files in ``work_dir``
 and subsequent runs pick up where a previous run stopped. Deleting a stage
@@ -25,10 +25,10 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import simpleSplit
 from reportlab.pdfgen import canvas
 
-from openpeerreview import stages
-from openpeerreview.core import USAGE_LOG, cleanup_resources, merge_pdfs_python
-from openpeerreview.helpers import calculate_cost
-from openpeerreview.render_text import render_text
+from presubmit import stages
+from presubmit.core import USAGE_LOG, cleanup_resources, merge_pdfs_python
+from presubmit.helpers import calculate_cost
+from presubmit.render_text import render_text
 
 MAX_COMBINED_PAGES = 500
 

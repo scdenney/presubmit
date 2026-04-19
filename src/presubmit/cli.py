@@ -1,4 +1,4 @@
-"""Command-line interface for openpeerreview."""
+"""Command-line interface for presubmit."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="openpeerreview",
+        prog="presubmit",
         description="Adversarial peer review for academic PDFs, powered by Google Gemini.",
     )
     parser.add_argument("pdf", help="Path to the PDF to review.")
@@ -110,11 +110,11 @@ def main(argv: list[str] | None = None) -> int:
         work_dir.mkdir(parents=True, exist_ok=True)
         cleanup_work_dir = False
     else:
-        work_dir = Path(tempfile.mkdtemp(prefix="openpeerreview_"))
+        work_dir = Path(tempfile.mkdtemp(prefix="presubmit_"))
         cleanup_work_dir = not args.keep_work_dir
 
     # Defer import to keep --help fast and avoid pulling in genai unnecessarily.
-    from openpeerreview.pipeline import PipelineError, run
+    from presubmit.pipeline import PipelineError, run
 
     try:
         final_txt = run(
