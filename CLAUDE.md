@@ -1,5 +1,19 @@
 # CLAUDE.md — Project Guide
 
+## Next up (calibration pass)
+
+Nothing blocking — the port compiles and all cross-references resolve. When returning to this repo, pick up in roughly this order:
+
+1. **Smoke-test on one real PDF.** `export ANTHROPIC_API_KEY=...`, `pip install -e .`, then `presubmit some-paper.pdf -o report.txt`. Watch for:
+   - `FATAL: Claude refused` — a Red Team prompt tripped Claude safety. Note which stage (the error message includes it); softening will be needed in `src/presubmit/prompts/01*.txt` or `02*.txt` most likely. The task is critical peer review, not personal attack; rewording usually clears refusals.
+   - Wall time and whether thinking budgets feel proportionate. Upstream's Gemini `thinking_budget=-1` mapped to `budget_tokens=12000` on Claude; high-reasoning stages (01a Breaker, 02e Assessment, 04a Reviewer) may want more.
+   - Model tier mapping quality. `MODELS` in `core.py` aliases Gemini keys → Claude; if Sonnet feels weak for Red Team stages, promote to Opus.
+2. **Populate `src/presubmit/data/pricing.csv`** with Claude per-M-token rates (input, output, thinking). Until then, `calculate_cost()` reports `MISSING` and end-of-run cost summaries are empty.
+3. **Decide the `use_search` path.** Options: (a) wire Tavily/SerpAPI into `call_claude` when `use_search=True`, (b) require a Claude Code session and use its `WebSearch` tool, (c) accept degraded stage-00a metadata on published manuscripts and move on. Affects stages that try to resolve citations against the live web.
+4. **Add a minimal smoke test.** One pytest that constructs a `call_claude` request with a 1-page throwaway PDF and asserts the response structure. Catches SDK-API-shape regressions.
+
+Things that do **not** need work: commits, push, cross-refs, sync with the sibling `paper-review-lite` skill in open-science-skills. All of that is already live.
+
 ## What this is
 
 `presubmit` is an adversarial peer-review pipeline for academic PDFs, ported from the upstream `reviewer2` (isitcredible.com, Apache-2.0) to run on Anthropic Claude instead of Google Gemini.
