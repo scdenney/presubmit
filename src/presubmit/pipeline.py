@@ -25,9 +25,12 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import simpleSplit
 from reportlab.pdfgen import canvas
 
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable
+
 from presubmit import stages
 from presubmit.core import USAGE_LOG, cleanup_resources, merge_pdfs_python
-from presubmit.helpers import calculate_cost
+from presubmit.helpers import calculate_cost, extract_info_fields
 from presubmit.render_text import render_text
 
 MAX_COMBINED_PAGES = 500
@@ -82,8 +85,29 @@ def _assemble_full_review(narrative_text: str, issues_text: str) -> str:
     return f"{narrative_text}\n\n## Potential Issues\n\n{issues_text}"
 
 
-def _run_stage_with_retry(stage_func, step_name: str, max_retries: int = 1):
-    """Execute a stage function with exponential backoff."""
+def _run_stage_with_retry(
+    stage_func,
+    step_name: str,
+    max_retries: int = 1,
+    *,
+    work_dir: Path | None = None,
+    cached_loader: Callable[[str], Any] | None = None,
+):
+    """Execute a stage function with exponential backoff.
+
+    If ``work_dir`` is provided and ``{step_name}.txt`` already exists and is
+    non-empty, skip execution and return the cached content. Use
+    ``cached_loader`` to transform the raw text into the stage's native return
+    type (e.g. a dict via ``extract_info_fields``). Delete the cached file to
+    force re-execution.
+    """
+    if work_dir is not None:
+        cached_path = work_dir / f"{step_name}.txt"
+        if cached_path.exists() and cached_path.stat().st_size > 0:
+            text = cached_path.read_text(encoding="utf-8")
+            print(f"\n  ✓ {step_name} cached ({cached_path.stat().st_size:,} bytes); loading from disk")
+            return cached_loader(text) if cached_loader else text
+
     retries = 0
     while retries <= max_retries:
         try:
@@ -329,11 +353,12 @@ def _run_inner(
     if start_stage <= 0.05 and stop_stage >= 0.0:
         s00a = _run_stage_with_retry(
             lambda: stages.stage_00a_metadata(str(target_file), str(work_dir)),
-            "00a_metadata", max_retries,
+            "00a_metadata", max_retries, work_dir=work_dir,
         )
         metadata = _run_stage_with_retry(
             lambda: stages.stage_00b_metadata_clean(s00a, str(target_file), str(work_dir)),
             "00b_metadata_clean", max_retries,
+            work_dir=work_dir, cached_loader=extract_info_fields,
         )
         if not metadata.get("citation") and citation:
             metadata["citation"] = citation
@@ -352,7 +377,7 @@ def _run_inner(
     if start_stage <= 0.9 and stop_stage >= 0.9:
         _run_stage_with_retry(
             lambda: stages.stage_00c_contributions(str(target_file), metadata, str(work_dir)),
-            "00c_contributions", max_retries,
+            "00c_contributions", max_retries, work_dir=work_dir,
         )
 
     s00c = _load_output(work_dir, "00c_contributions.txt")
@@ -369,43 +394,61 @@ def _run_inner(
     s01a_2 = None
 
     if start_stage <= 1.99:
-        # Report flow (core Red Team)
-        if start_stage <= 1.0 and stop_stage >= 1.0:
-            s01a = _run_stage_with_retry(
-                lambda: stages.stage_01a_breaker(str(target_file), metadata, str(work_dir), s00c),
-                "01a_breaker", max_retries,
-            )
-        else:
-            s01a = _load_output(work_dir, "01a_breaker.txt")
-
+        # Red Team agents 01a/01b/01c/01g read the same PDF and emit independent
+        # issue lists; run them concurrently. 01d collates 01b+01c so it must
+        # run afterwards.
         if is_empirical:
-            if start_stage <= 1.1 and stop_stage >= 1.1:
-                s01b = _run_stage_with_retry(
-                    lambda: stages.stage_01b_butcher(str(target_file), metadata, str(work_dir), s00c),
-                    "01b_butcher", max_retries,
-                )
-                s01c = _run_stage_with_retry(
-                    lambda: stages.stage_01c_shredder(str(target_file), metadata, str(work_dir), s00c),
-                    "01c_shredder", max_retries,
-                )
-            else:
-                s01b = _load_output(work_dir, "01b_butcher.txt")
-                s01c = _load_output(work_dir, "01c_shredder.txt")
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                futures: dict[str, Any] = {}
+                if start_stage <= 1.0 and stop_stage >= 1.0:
+                    futures["01a"] = ex.submit(
+                        _run_stage_with_retry,
+                        lambda: stages.stage_01a_breaker(str(target_file), metadata, str(work_dir), s00c),
+                        "01a_breaker", max_retries, work_dir=work_dir,
+                    )
+                if start_stage <= 1.1 and stop_stage >= 1.1:
+                    futures["01b"] = ex.submit(
+                        _run_stage_with_retry,
+                        lambda: stages.stage_01b_butcher(str(target_file), metadata, str(work_dir), s00c),
+                        "01b_butcher", max_retries, work_dir=work_dir,
+                    )
+                    futures["01c"] = ex.submit(
+                        _run_stage_with_retry,
+                        lambda: stages.stage_01c_shredder(str(target_file), metadata, str(work_dir), s00c),
+                        "01c_shredder", max_retries, work_dir=work_dir,
+                    )
+                if start_stage <= 1.6 and stop_stage >= 1.6:
+                    futures["01g"] = ex.submit(
+                        _run_stage_with_retry,
+                        lambda: stages.stage_01g_the_void(str(target_file), s00c, metadata, str(work_dir)),
+                        "01g_the_void", max_retries, work_dir=work_dir,
+                    )
+                s01a = futures["01a"].result() if "01a" in futures else _load_output(work_dir, "01a_breaker.txt")
+                s01b = futures["01b"].result() if "01b" in futures else _load_output(work_dir, "01b_butcher.txt")
+                s01c = futures["01c"].result() if "01c" in futures else _load_output(work_dir, "01c_shredder.txt")
+                s01g = futures["01g"].result() if "01g" in futures else _load_output(work_dir, "01g_the_void.txt")
 
             if start_stage <= 1.2 and stop_stage >= 1.2:
                 s01d = _run_stage_with_retry(
                     lambda: stages.stage_01d_collector(str(target_file), s01b, s01c, metadata, str(work_dir)),
-                    "01d_collector", max_retries,
+                    "01d_collector", max_retries, work_dir=work_dir,
                 )
             else:
                 s01d = _load_output(work_dir, "01d_collector.txt")
         else:
+            if start_stage <= 1.0 and stop_stage >= 1.0:
+                s01a = _run_stage_with_retry(
+                    lambda: stages.stage_01a_breaker(str(target_file), metadata, str(work_dir), s00c),
+                    "01a_breaker", max_retries, work_dir=work_dir,
+                )
+            else:
+                s01a = _load_output(work_dir, "01a_breaker.txt")
             print("  → Non-Empirical Paper detected: Skipping Butcher/Shredder, triggering Breaker Round 2.")
             if start_stage <= 1.1 and stop_stage >= 1.1:
                 s01a = s01a or _load_output(work_dir, "01a_breaker.txt")
                 s01a_2 = _run_stage_with_retry(
                     lambda: stages.stage_01a_2_breaker_revisit(str(target_file), s01a, metadata, str(work_dir)),
-                    "01a_2_breaker_revisit", max_retries,
+                    "01a_2_breaker_revisit", max_retries, work_dir=work_dir,
                 )
             else:
                 s01a_2 = _load_output(work_dir, "01a_2_breaker_revisit.txt")
@@ -413,11 +456,21 @@ def _run_inner(
             s01c = "N/A (Non-Empirical)"
             s01d = "N/A (Non-Empirical)"
 
+            # Void runs for non-empirical too; the empirical branch already ran
+            # it in the parallel block above.
+            if start_stage <= 1.6 and stop_stage >= 1.6:
+                s01g = _run_stage_with_retry(
+                    lambda: stages.stage_01g_the_void(str(target_file), s00c, metadata, str(work_dir)),
+                    "01g_the_void", max_retries, work_dir=work_dir,
+                )
+            else:
+                s01g = _load_output(work_dir, "01g_the_void.txt")
+
         # Math path (01e always; 01e2/01fa-01fd only if do_math)
         if start_stage <= 1.3 and stop_stage >= 1.3:
             s01e = _run_stage_with_retry(
                 lambda: stages.stage_01e_math_extract(str(target_file), s00c, metadata, str(work_dir)),
-                "01e_math", max_retries,
+                "01e_math", max_retries, work_dir=work_dir,
             )
         else:
             s01e = _load_output(work_dir, "01e_math.txt")
@@ -426,7 +479,7 @@ def _run_inner(
             if start_stage <= 1.35 and stop_stage >= 1.35:
                 s01e2 = _run_stage_with_retry(
                     lambda: stages.stage_01e2_equation_extraction(str(target_file), metadata, str(work_dir)),
-                    "01e2_equation_extraction", max_retries,
+                    "01e2_equation_extraction", max_retries, work_dir=work_dir,
                 )
             else:
                 s01e2 = _load_output(work_dir, "01e2_equations.txt")
@@ -434,12 +487,12 @@ def _run_inner(
             if start_stage <= 1.4 and stop_stage >= 1.4:
                 s01fa = _run_stage_with_retry(
                     lambda: stages.stage_01fa_math_check(str(target_file), s00c, metadata, str(work_dir), equations=s01e2),
-                    "01fa_math_check", max_retries,
+                    "01fa_math_check", max_retries, work_dir=work_dir,
                 )
                 proofread_pdf = str(main_only_file) if main_only_file.exists() else str(target_file)
                 s01fb = _run_stage_with_retry(
                     lambda: stages.stage_01fb_math_proofread(proofread_pdf, s00c, metadata, str(work_dir), equations=s01e2),
-                    "01fb_math_proofread", max_retries,
+                    "01fb_math_proofread", max_retries, work_dir=work_dir,
                 )
             else:
                 s01fa = _load_output(work_dir, "01fa_math_check.txt")
@@ -449,7 +502,7 @@ def _run_inner(
                 s01fb = s01fb or _load_output(work_dir, "01fb_math_proofread.txt") or ""
                 s01fc = _run_stage_with_retry(
                     lambda: stages.stage_01fc_math_audit(str(target_file), s01fb, s00c, metadata, str(work_dir), equations=s01e2),
-                    "01fc_math_audit", max_retries,
+                    "01fc_math_audit", max_retries, work_dir=work_dir,
                 )
             else:
                 s01fc = _load_output(work_dir, "01fc_math_audit.txt")
@@ -461,21 +514,13 @@ def _run_inner(
                 mathpix_raw = _load_output(work_dir, "01e2_mathpix_raw.txt")
                 s01fd = _run_stage_with_retry(
                     lambda: stages.stage_01fd_math_sober(str(target_file), s01fa, s01fb, s01fc, s00c, metadata, str(work_dir), equations=s01e2, mathpix_raw=mathpix_raw),
-                    "01fd_math_sober", max_retries,
+                    "01fd_math_sober", max_retries, work_dir=work_dir,
                 )
                 s01f_alg = s01fd
             else:
                 s01f_alg = _load_output(work_dir, "01fd_math_sober.txt") or "=NULL="
         else:
             s01f_alg = "=NULL="
-
-        if start_stage <= 1.6 and stop_stage >= 1.6:
-            s01g = _run_stage_with_retry(
-                lambda: stages.stage_01g_the_void(str(target_file), s00c, metadata, str(work_dir)),
-                "01g_the_void", max_retries,
-            )
-        else:
-            s01g = _load_output(work_dir, "01g_the_void.txt")
 
         # Code analysis
         if do_code and code_dir and code_dir.exists():
@@ -506,17 +551,17 @@ def _run_inner(
             if start_stage <= 1.8 and stop_stage >= 1.8:
                 _run_stage_with_retry(
                     lambda: stages.stage_01_code_gonzo(code_combined_pdf, metadata, str(work_dir)),
-                    "01i_code_gonzo", max_retries,
+                    "01i_code_gonzo", max_retries, work_dir=work_dir,
                 )
             if start_stage <= 1.81 and stop_stage >= 1.81:
                 _run_stage_with_retry(
                     lambda: stages.stage_01_code_gonzo_b(code_combined_pdf, metadata, str(work_dir)),
-                    "01j_code_gonzo_b", max_retries,
+                    "01j_code_gonzo_b", max_retries, work_dir=work_dir,
                 )
             if start_stage <= 1.82 and stop_stage >= 1.82:
                 _run_stage_with_retry(
                     lambda: stages.stage_01_code_gonzo_c(code_combined_pdf, metadata, str(work_dir)),
-                    "01k_code_gonzo_c", max_retries,
+                    "01k_code_gonzo_c", max_retries, work_dir=work_dir,
                 )
             if start_stage <= 1.83 and stop_stage >= 1.83:
                 g1 = _load_output(work_dir, "01i_code_gonzo.txt") or ""
@@ -524,20 +569,20 @@ def _run_inner(
                 g3 = _load_output(work_dir, "01k_code_gonzo_c.txt") or ""
                 _run_stage_with_retry(
                     lambda: stages.stage_01_code_compiler(g1, g2, g3, metadata, str(work_dir)),
-                    "01l_code_compiler", max_retries,
+                    "01l_code_compiler", max_retries, work_dir=work_dir,
                 )
             if start_stage <= 1.85 and stop_stage >= 1.85:
                 consolidated = _load_output(work_dir, "01l_code_compiler.txt") or ""
                 _run_stage_with_retry(
                     lambda: stages.stage_01_code_checker(consolidated, metadata, str(work_dir), code_combined_pdf),
-                    "01m_code_checker", max_retries,
+                    "01m_code_checker", max_retries, work_dir=work_dir,
                 )
             if start_stage <= 1.87 and stop_stage >= 1.87:
                 consolidated = _load_output(work_dir, "01l_code_compiler.txt") or ""
                 checker = _load_output(work_dir, "01m_code_checker.txt") or ""
                 _run_stage_with_retry(
                     lambda: stages.stage_01_code_list(consolidated, checker, metadata, str(work_dir)),
-                    "01n_code_list", max_retries,
+                    "01n_code_list", max_retries, work_dir=work_dir,
                 )
             code_analysis = _load_output(work_dir, "01n_code_list.txt")
         elif do_code:
@@ -546,7 +591,7 @@ def _run_inner(
         if start_stage <= 1.99 and stop_stage >= 1.99:
             _run_stage_with_retry(
                 lambda: stages.stage_01o_summarizer(s01a, s01b, s01c, s01d, s01f_alg, s01e, s01g, s00c, metadata, str(work_dir)),
-                "01o_summarizer", max_retries,
+                "01o_summarizer", max_retries, work_dir=work_dir,
             )
 
     potential_issues = _load_output(work_dir, "01o_summarizer.txt")
@@ -576,7 +621,7 @@ def _run_inner(
     if start_stage <= 4.0 and stop_stage >= 4.0:
         s04 = _run_stage_with_retry(
             lambda: stages.stage_04a_reviewer(str(target_file), s00c, final_list_for_reviewer, metadata, str(work_dir)),
-            "04a_reviewer", max_retries,
+            "04a_reviewer", max_retries, work_dir=work_dir,
         )
     else:
         s04 = _load_output(work_dir, "04a_reviewer.txt")
@@ -601,7 +646,7 @@ def _run_inner(
     if start_stage <= 6.0 and stop_stage >= 6.0:
         s06 = _run_stage_with_retry(
             lambda: stages.stage_06_legal(final_review_text, metadata, str(work_dir)),
-            "06_legal", max_retries,
+            "06_legal", max_retries, work_dir=work_dir,
         )
     else:
         s06 = _load_output(work_dir, "06_legal.txt") or ""
@@ -617,7 +662,7 @@ def _run_inner(
         final_review_text = final_review_text or ""
         s07 = _run_stage_with_retry(
             lambda: stages.stage_07_formatter(final_review_text, s06, metadata, str(work_dir)),
-            "07_formatter", max_retries,
+            "07_formatter", max_retries, work_dir=work_dir,
         )
     else:
         s07 = _load_output(work_dir, "07_formatter.txt") or ""
@@ -632,7 +677,7 @@ def _run_inner(
             code_verified = _load_output(work_dir, "01n_code_list.txt") or ""
             _run_stage_with_retry(
                 lambda: stages.stage_04b_data_editor(code_verified, metadata, str(work_dir), paper_review_context=paper_review_context),
-                "04b_data_editor", max_retries,
+                "04b_data_editor", max_retries, work_dir=work_dir,
             )
 
     # Assemble final body with Data Editor insertion
@@ -667,7 +712,7 @@ def _run_stage_2(target_file, potential_issues, s00c, metadata, work_dir, s01e2,
         if start_stage <= 2.0 and stop_stage >= 2.0:
             s02a = _run_stage_with_retry(
                 lambda: stages.stage_02a_numbers(target_file, potential_issues, metadata, str(work_dir), equations=s01e2),
-                "02a_numbers", max_retries,
+                "02a_numbers", max_retries, work_dir=work_dir,
             )
         else:
             s02a = _load_output(work_dir, "02a_numbers.txt")
@@ -676,7 +721,7 @@ def _run_stage_2(target_file, potential_issues, s00c, metadata, work_dir, s01e2,
             s02a = s02a or _load_output(work_dir, "02a_numbers.txt")
             s02b = _run_stage_with_retry(
                 lambda: stages.stage_02b_compiler_1(potential_issues, s02a, str(work_dir)),
-                "02b_compiler_1", max_retries,
+                "02b_compiler_1", max_retries, work_dir=work_dir,
             )
         else:
             s02b = _load_output(work_dir, "02b_compiler_1.txt")
@@ -685,7 +730,7 @@ def _run_stage_2(target_file, potential_issues, s00c, metadata, work_dir, s01e2,
             s02b = s02b or _load_output(work_dir, "02b_compiler_1.txt")
             s02c = _run_stage_with_retry(
                 lambda: stages.stage_02c_blue_team(target_file, s02b, s00c, metadata, str(work_dir)),
-                "02c_blue_team", max_retries,
+                "02c_blue_team", max_retries, work_dir=work_dir,
             )
         else:
             s02c = _load_output(work_dir, "02c_blue_team.txt")
@@ -695,7 +740,7 @@ def _run_stage_2(target_file, potential_issues, s00c, metadata, work_dir, s01e2,
             s02c = s02c or _load_output(work_dir, "02c_blue_team.txt")
             s02d = _run_stage_with_retry(
                 lambda: stages.stage_02d_compiler_2(s02b, s02c, str(work_dir)),
-                "02d_compiler_2", max_retries,
+                "02d_compiler_2", max_retries, work_dir=work_dir,
             )
         else:
             s02d = _load_output(work_dir, "02d_compiler_2.txt")
@@ -704,7 +749,7 @@ def _run_stage_2(target_file, potential_issues, s00c, metadata, work_dir, s01e2,
             s02d = s02d or _load_output(work_dir, "02d_compiler_2.txt")
             s02e = _run_stage_with_retry(
                 lambda: stages.stage_02e_assessment(target_file, s02d, metadata, str(work_dir)),
-                "02e_assessment", max_retries,
+                "02e_assessment", max_retries, work_dir=work_dir,
             )
         else:
             s02e = _load_output(work_dir, "02e_assessment.txt")
@@ -714,7 +759,7 @@ def _run_stage_2(target_file, potential_issues, s00c, metadata, work_dir, s01e2,
             s02e = s02e or _load_output(work_dir, "02e_assessment.txt")
             s02f = _run_stage_with_retry(
                 lambda: stages.stage_02f_compiler_3(s02d, s02e, str(work_dir)),
-                "02f_compiler_3", max_retries,
+                "02f_compiler_3", max_retries, work_dir=work_dir,
             )
         else:
             s02f = _load_output(work_dir, "02f_compiler_3.txt")
@@ -723,7 +768,7 @@ def _run_stage_2(target_file, potential_issues, s00c, metadata, work_dir, s01e2,
             s02f = s02f or _load_output(work_dir, "02f_compiler_3.txt")
             s02g = _run_stage_with_retry(
                 lambda: stages.stage_02g_list_v1(target_file, s02f, metadata, str(work_dir)),
-                "02g_list_v1", max_retries,
+                "02g_list_v1", max_retries, work_dir=work_dir,
             )
         else:
             s02g = _load_output(work_dir, "02g_list_v1.txt")
@@ -736,23 +781,25 @@ def _run_stage_3(target_file, s02g, metadata, work_dir, s01e2, start_stage, stop
     s03a = s03b = s03c = None
 
     if start_stage <= 3.9:
-        if start_stage <= 3.0 and stop_stage >= 3.0:
-            s02g = s02g or _load_output(work_dir, "02g_list_v1.txt")
-            s03a = _run_stage_with_retry(
-                lambda: stages.stage_03a_checker_1(target_file, s02g, metadata, str(work_dir), equations=s01e2),
-                "03a_checker_1", max_retries,
-            )
-        else:
-            s03a = _load_output(work_dir, "03a_checker_1.txt")
-
-        if start_stage <= 3.2 and stop_stage >= 3.2:
-            s02g = s02g or _load_output(work_dir, "02g_list_v1.txt")
-            s03b = _run_stage_with_retry(
-                lambda: stages.stage_03b_external(target_file, s02g, metadata, str(work_dir)),
-                "03b_external", max_retries,
-            )
-        else:
-            s03b = _load_output(work_dir, "03b_external.txt")
+        # 03a (numbers/internal checker) and 03b (external check) both depend
+        # only on 02g, so run them concurrently.
+        s02g = s02g or _load_output(work_dir, "02g_list_v1.txt")
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            futures: dict[str, Any] = {}
+            if start_stage <= 3.0 and stop_stage >= 3.0:
+                futures["03a"] = ex.submit(
+                    _run_stage_with_retry,
+                    lambda: stages.stage_03a_checker_1(target_file, s02g, metadata, str(work_dir), equations=s01e2),
+                    "03a_checker_1", max_retries, work_dir=work_dir,
+                )
+            if start_stage <= 3.2 and stop_stage >= 3.2:
+                futures["03b"] = ex.submit(
+                    _run_stage_with_retry,
+                    lambda: stages.stage_03b_external(target_file, s02g, metadata, str(work_dir)),
+                    "03b_external", max_retries, work_dir=work_dir,
+                )
+            s03a = futures["03a"].result() if "03a" in futures else _load_output(work_dir, "03a_checker_1.txt")
+            s03b = futures["03b"].result() if "03b" in futures else _load_output(work_dir, "03b_external.txt")
 
         if start_stage <= 3.4 and stop_stage >= 3.4:
             s02g = s02g or _load_output(work_dir, "02g_list_v1.txt")
@@ -760,7 +807,7 @@ def _run_stage_3(target_file, s02g, metadata, work_dir, s01e2, start_stage, stop
             s03b = s03b or _load_output(work_dir, "03b_external.txt")
             s03c = _run_stage_with_retry(
                 lambda: stages.stage_03c_list_v2(s02g, s03a, s03b, metadata, str(work_dir)),
-                "03c_list_v2", max_retries,
+                "03c_list_v2", max_retries, work_dir=work_dir,
             )
         else:
             s03c = _load_output(work_dir, "03c_list_v2.txt")
@@ -780,28 +827,31 @@ def _run_stage_5(target_file, full_review_draft, metadata, work_dir, s01e2, star
     s05a = s05b = s05c = None
 
     if start_stage <= 5.9:
-        if start_stage <= 5.0 and stop_stage >= 5.0:
-            s05a = _run_stage_with_retry(
-                lambda: stages.stage_05a_checker_2(target_file, full_review_draft, metadata, str(work_dir), equations=s01e2),
-                "05a_checker_2", max_retries,
-            )
-        else:
-            s05a = _load_output(work_dir, "05a_checker_2.txt")
-
-        if start_stage <= 5.2 and stop_stage >= 5.2:
-            s05b = _run_stage_with_retry(
-                lambda: stages.stage_05b_checker_3(target_file, full_review_draft, metadata, str(work_dir)),
-                "05b_checker_3", max_retries,
-            )
-        else:
-            s05b = _load_output(work_dir, "05b_checker_3.txt")
+        # 05a and 05b both check the full review draft independently;
+        # run concurrently.
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            futures: dict[str, Any] = {}
+            if start_stage <= 5.0 and stop_stage >= 5.0:
+                futures["05a"] = ex.submit(
+                    _run_stage_with_retry,
+                    lambda: stages.stage_05a_checker_2(target_file, full_review_draft, metadata, str(work_dir), equations=s01e2),
+                    "05a_checker_2", max_retries, work_dir=work_dir,
+                )
+            if start_stage <= 5.2 and stop_stage >= 5.2:
+                futures["05b"] = ex.submit(
+                    _run_stage_with_retry,
+                    lambda: stages.stage_05b_checker_3(target_file, full_review_draft, metadata, str(work_dir)),
+                    "05b_checker_3", max_retries, work_dir=work_dir,
+                )
+            s05a = futures["05a"].result() if "05a" in futures else _load_output(work_dir, "05a_checker_2.txt")
+            s05b = futures["05b"].result() if "05b" in futures else _load_output(work_dir, "05b_checker_3.txt")
 
         if start_stage <= 5.8 and stop_stage >= 5.8:
             s05a = s05a or _load_output(work_dir, "05a_checker_2.txt")
             s05b = s05b or _load_output(work_dir, "05b_checker_3.txt")
             s05c = _run_stage_with_retry(
                 lambda: stages.stage_05c_reviser(full_review_draft, s05a, s05b, metadata, str(work_dir)),
-                "05c_reviser", max_retries,
+                "05c_reviser", max_retries, work_dir=work_dir,
             )
         else:
             s05c = _load_output(work_dir, "05c_reviser.txt")
@@ -816,7 +866,16 @@ def _run_stage_5(target_file, full_review_draft, metadata, work_dir, s01e2, star
 
 
 def _run_writer_mode(target_file, s07_review, metadata, work_dir, start_stage, stop_stage, max_retries):
-    """Resilient Writer Mode pipeline with step-back recovery (stages 08a–09c)."""
+    """Writer Mode pipeline (stages 08a–09c), parallelised by dependency.
+
+    Phases:
+      1. 08a (alchemist) ‖ 09a (proofreader) — both read the paper directly.
+      2. 08b (polisher, needs 08a) ‖ 09b (proofread clean, needs 09a).
+      3. 09c (copyedit, needs 08a + 08b).
+
+    Per-step retries come from ``_run_stage_with_retry``; cached outputs from a
+    prior run skip automatically.
+    """
     print("\n═══════════════════════════════════════════════════════════════════")
     print("   ENTERING WRITER MODE")
     print("═══════════════════════════════════════════════════════════════════")
@@ -825,84 +884,64 @@ def _run_writer_mode(target_file, s07_review, metadata, work_dir, start_stage, s
     # for the reader, not revision advice.
     alchemist_input = re.sub(r"\n*## Data Editor\n.*", "", s07_review, flags=re.DOTALL)
 
-    def get_data():
-        d = {}
-        for key, fname in [
-            ("s08a", "08a_alchemist.txt"),
-            ("s08a_inst", "08a_alchemist_instructions.txt"),
-            ("s08b", "08b_polisher.txt"),
-            ("s09a", "09a_proofreader.txt"),
-        ]:
-            content = _load_output(work_dir, fname)
-            if content is not None:
-                d[key] = content
-        return d
+    # Phase 1: 08a + 09a (both read the paper directly).
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        phase1: dict[str, Any] = {}
+        if start_stage <= 8.0 and stop_stage >= 8.0:
+            phase1["08a"] = ex.submit(
+                _run_stage_with_retry,
+                lambda: stages.stage_08a_alchemist(target_file, alchemist_input, metadata, str(work_dir)),
+                "08a_alchemist", max_retries, work_dir=work_dir,
+            )
+        if start_stage <= 9.0 and stop_stage >= 9.0:
+            phase1["09a"] = ex.submit(
+                _run_stage_with_retry,
+                lambda: stages.stage_09a_proofreader(target_file, metadata, str(work_dir)),
+                "09a_proofreader", max_retries, work_dir=work_dir,
+            )
+        for fid, fut in phase1.items():
+            fut.result()
 
-    def run_08a():
-        return stages.stage_08a_alchemist(target_file, alchemist_input, metadata, str(work_dir))
-    def run_08b():
-        data = get_data()
-        if "s08a" not in data:
-            raise ValueError("Missing input: 08a_alchemist.txt")
-        return stages.stage_08b_polisher(data["s08a"], metadata, str(work_dir))
-    def run_09a():
-        return stages.stage_09a_proofreader(target_file, metadata, str(work_dir))
-    def run_09b():
-        data = get_data()
-        source = data.get("s09a", "=NULL=")
-        return stages.stage_09b_proofread_clean(source, metadata, str(work_dir))
-    def run_09c():
-        data = get_data()
-        polished = data.get("s08b", "Note missing.")
-        inst = data.get("s08a_inst", "Instructions missing.")
-        return stages.stage_09c_copyedit(target_file, alchemist_input, polished, inst, metadata, str(work_dir))
+    if stop_stage < 8.5:
+        return
 
-    steps = [
-        {"id": "08a", "func": run_08a, "threshold": 8.0},
-        {"id": "08b", "func": run_08b, "threshold": 8.5},
-        {"id": "09a", "func": run_09a, "threshold": 9.0},
-        {"id": "09b", "func": run_09b, "threshold": 9.1},
-        {"id": "09c", "func": run_09c, "threshold": 9.2},
-    ]
+    # Phase 2: 08b (needs 08a) + 09b (needs 09a).
+    s08a = _load_output(work_dir, "08a_alchemist.txt") or ""
+    s09a = _load_output(work_dir, "09a_proofreader.txt") or "=NULL="
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        phase2: dict[str, Any] = {}
+        if start_stage <= 8.5 and stop_stage >= 8.5 and s08a:
+            phase2["08b"] = ex.submit(
+                _run_stage_with_retry,
+                lambda: stages.stage_08b_polisher(s08a, metadata, str(work_dir)),
+                "08b_polisher", max_retries, work_dir=work_dir,
+            )
+        if start_stage <= 9.1 and stop_stage >= 9.1:
+            phase2["09b"] = ex.submit(
+                _run_stage_with_retry,
+                lambda: stages.stage_09b_proofread_clean(s09a, metadata, str(work_dir)),
+                "09b_proofread_clean", max_retries, work_dir=work_dir,
+            )
+        for fid, fut in phase2.items():
+            fut.result()
 
-    global_retries = 0
-    max_global_retries = 4
-    idx = 0
-    while idx < len(steps) and start_stage > steps[idx]["threshold"]:
-        idx += 1
+    # Persist the editor's note onto metadata.json once 08b is in.
+    s08b = _load_output(work_dir, "08b_polisher.txt")
+    if s08b:
+        metadata["editor_note"] = s08b
+        (work_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
-    while idx < len(steps):
-        step = steps[idx]
-        if step["threshold"] > stop_stage:
-            print(f"  🛑 Reached Stop Stage ({stop_stage}). Stopping before {step['id']}.")
-            return
+    if stop_stage < 9.2:
+        return
 
-        print(f"\n  ► Executing Step {step['id']}...")
-        try:
-            step["func"]()
-            print(f"    ✓ Step {step['id']} Complete.")
-            idx += 1
-            if step["id"] == "08b":
-                data = get_data()
-                if "s08b" in data:
-                    metadata["editor_note"] = data["s08b"]
-                    (work_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-        except Exception as e:
-            print(f"    ✗ FAILURE in Step {step['id']}: {e}")
-            try:
-                print(f"    ↻ Retrying Step {step['id']} (Attempt 2)...")
-                step["func"]()
-                print(f"    ✓ Step {step['id']} Recovered.")
-                idx += 1
-            except Exception as e2:
-                print(f"    ✗ FAILURE (Attempt 2) in Step {step['id']}: {e2}")
-                if global_retries < max_global_retries and idx > 0:
-                    global_retries += 1
-                    print(f"    ⚠️ FALLBACK ({global_retries}/{max_global_retries}): stepping back to {steps[idx-1]['id']}")
-                    idx -= 1
-                    time.sleep(10)
-                else:
-                    raise PipelineError(f"Writer Mode failed at {step['id']}: {e2}")
+    # Phase 3: 09c needs 08a + 08b.
+    if start_stage <= 9.2 and stop_stage >= 9.2:
+        s08a_inst = _load_output(work_dir, "08a_alchemist_instructions.txt") or "Instructions missing."
+        polished = s08b or "Note missing."
+        _run_stage_with_retry(
+            lambda: stages.stage_09c_copyedit(target_file, alchemist_input, polished, s08a_inst, metadata, str(work_dir)),
+            "09c_copyedit", max_retries, work_dir=work_dir,
+        )
 
 
 # ---------------------------------------------------------------------------

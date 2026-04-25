@@ -67,6 +67,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-size-check", action="store_true",
         help="Bypass the 500-page combined-volume circuit breaker.",
     )
+    parser.add_argument(
+        "--start-stage", type=float, default=0.0, metavar="N.N",
+        help="Resume from this stage number (e.g. 1.6 to skip metadata + most of "
+             "the Red Team). 0.0 runs from the beginning. Cached stage files in "
+             "--work-dir are skipped automatically; --start-stage is for forcing "
+             "the pipeline past gates that don't correspond to a single .txt.",
+    )
+    parser.add_argument(
+        "--stop-stage", type=float, default=100.0, metavar="N.N",
+        help="Halt before this stage number (e.g. 4.0 to stop after the reviewer "
+             "synthesis but before writer mode). 100.0 runs to end.",
+    )
     return parser
 
 
@@ -127,6 +139,8 @@ def main(argv: list[str] | None = None) -> int:
             supp_pdfs=args.supp or None,
             code_dir=args.code_dir,
             citation=args.citation,
+            start_stage=args.start_stage,
+            stop_stage=args.stop_stage,
             skip_size_check=args.skip_size_check,
         )
     except PipelineError as e:

@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +30,8 @@ USAGE_LOG: list[dict] = []
 
 # { local_file_path: claude_file_id }. Reset with cleanup_resources.
 _FILE_CACHE: dict[str, str] = {}
+# Guards _FILE_CACHE so parallel stages don't race on the upload path.
+_FILE_CACHE_LOCK = threading.Lock()
 
 # Upstream reviewer2 model keys → Claude equivalents.
 # Haiku for light/fast stages, Sonnet for mid-tier, Opus for heavy reasoning.
@@ -51,34 +54,56 @@ MODELS = {
 DEFAULT_MAX_TOKENS = 16000
 
 # Gemini `thinking_level` → Claude extended-thinking budget_tokens.
+# Used only on models that still accept the legacy `{"type": "enabled",
+# "budget_tokens": N}` thinking config (Sonnet 4.6, Haiku 4.5, etc.).
 THINKING_LEVEL_TO_BUDGET = {"low": 2000, "medium": 5000, "high": 10000}
+
+# Models that require the new adaptive-thinking API
+# (`thinking.type=adaptive` + `output_config.effort=low|medium|high`)
+# instead of the legacy `{"type": "enabled", "budget_tokens": N}` format.
+# Opus 4.7 deprecated the legacy form.
+_ADAPTIVE_THINKING_MODELS = ("opus-4-7",)
+
+
+def _budget_to_effort(budget: int) -> str:
+    """Bucket a token budget into the adaptive-thinking effort tier."""
+    if budget < 3000:
+        return "low"
+    if budget < 8000:
+        return "medium"
+    return "high"
 
 # Beta flag required for the Files API.
 _FILES_API_BETA = "files-api-2025-04-14"
 
 
 def get_or_upload_file(client: anthropic.Anthropic, file_path: str, force_upload: bool = False) -> str:
-    """Upload a PDF to Claude once per session; reuse the file_id after that."""
+    """Upload a PDF to Claude once per session; reuse the file_id after that.
+
+    Thread-safe: parallel stages calling this with the same ``file_path`` will
+    serialise through ``_FILE_CACHE_LOCK`` so only one upload happens.
+    """
     global _FILE_CACHE
 
-    if not force_upload and file_path in _FILE_CACHE:
-        return _FILE_CACHE[file_path]
+    with _FILE_CACHE_LOCK:
+        if not force_upload and file_path in _FILE_CACHE:
+            return _FILE_CACHE[file_path]
 
-    print(f"    ↳ 📤 Uploading NEW file to Claude: {os.path.basename(file_path)}...")
-    try:
-        with open(file_path, "rb") as fh:
-            uploaded = client.beta.files.upload(
-                file=(os.path.basename(file_path), fh, "application/pdf"),
-                betas=[_FILES_API_BETA],
-            )
-        file_id = uploaded.id
-        _FILE_CACHE[file_path] = file_id
-        print(f"    ✓ Upload complete: {file_id} (Cached)")
-        return file_id
-    except Exception as e:
-        if file_path in _FILE_CACHE:
-            del _FILE_CACHE[file_path]
-        raise IOError(f"Error uploading PDF '{file_path}': {e}")
+        print(f"    ↳ 📤 Uploading NEW file to Claude: {os.path.basename(file_path)}...")
+        try:
+            with open(file_path, "rb") as fh:
+                uploaded = client.beta.files.upload(
+                    file=(os.path.basename(file_path), fh, "application/pdf"),
+                    betas=[_FILES_API_BETA],
+                )
+            file_id = uploaded.id
+            _FILE_CACHE[file_path] = file_id
+            print(f"    ✓ Upload complete: {file_id} (Cached)")
+            return file_id
+        except Exception as e:
+            if file_path in _FILE_CACHE:
+                del _FILE_CACHE[file_path]
+            raise IOError(f"Error uploading PDF '{file_path}': {e}")
 
 
 def cleanup_resources():
@@ -148,23 +173,37 @@ def call_claude(
     client = anthropic.Anthropic(api_key=api_key)
 
     # Extended thinking configuration.
-    # Gemini's `thinking_budget=-1` means "unbounded" — we approximate with high budget.
+    # Two API shapes coexist:
+    #   - legacy:   thinking={"type": "enabled", "budget_tokens": N}
+    #   - adaptive: thinking={"type": "adaptive"}, output_config={"effort": "low|medium|high"}
+    # Opus 4.7 dropped legacy. We pick per-model.
+    use_adaptive = any(tag in model_name for tag in _ADAPTIVE_THINKING_MODELS)
     thinking_cfg = None
-    if thinking_budget is not None:
-        if int(thinking_budget) < 0:
-            budget = 12000  # upstream "unbounded" ≈ high budget
-        else:
-            budget = int(thinking_budget)
-        if budget >= 1024:  # Anthropic minimum
-            thinking_cfg = {"type": "enabled", "budget_tokens": budget}
-    elif thinking_level:
-        budget = THINKING_LEVEL_TO_BUDGET.get(thinking_level, 5000)
-        thinking_cfg = {"type": "enabled", "budget_tokens": budget}
+    output_config = None
 
-    # Resolve max_tokens. Required by Anthropic API; must exceed thinking budget.
+    # Gemini's `thinking_budget=-1` means "unbounded" — we approximate with high budget.
+    if thinking_budget is not None:
+        budget = 12000 if int(thinking_budget) < 0 else int(thinking_budget)
+        if budget >= 1024:  # Anthropic minimum
+            if use_adaptive:
+                thinking_cfg = {"type": "adaptive"}
+                output_config = {"effort": _budget_to_effort(budget)}
+            else:
+                thinking_cfg = {"type": "enabled", "budget_tokens": budget}
+    elif thinking_level:
+        if use_adaptive:
+            effort = thinking_level if thinking_level in ("low", "medium", "high") else "medium"
+            thinking_cfg = {"type": "adaptive"}
+            output_config = {"effort": effort}
+        else:
+            budget = THINKING_LEVEL_TO_BUDGET.get(thinking_level, 5000)
+            thinking_cfg = {"type": "enabled", "budget_tokens": budget}
+
+    # Resolve max_tokens. Required by Anthropic API; must exceed legacy thinking budget.
     max_tok = max_output_tokens or DEFAULT_MAX_TOKENS
-    if thinking_cfg and max_tok <= thinking_cfg["budget_tokens"]:
-        max_tok = thinking_cfg["budget_tokens"] + 8000
+    if thinking_cfg and thinking_cfg.get("type") == "enabled":
+        if max_tok <= thinking_cfg["budget_tokens"]:
+            max_tok = thinking_cfg["budget_tokens"] + 8000
 
     if use_search:
         print(
@@ -211,7 +250,9 @@ def call_claude(
             kwargs["system"] = system_instruction
         if thinking_cfg:
             kwargs["thinking"] = thinking_cfg
-            # Extended thinking requires temperature=1.
+            if output_config:
+                kwargs["output_config"] = output_config
+            # Both legacy and adaptive thinking on Claude require temperature=1.
             kwargs["temperature"] = 1.0
 
         try:
