@@ -134,6 +134,12 @@ def cleanup_resources():
 atexit.register(cleanup_resources)
 
 
+_TEXT_DOC_EXTENSIONS = (".md", ".markdown", ".txt")
+# Anthropic prompt-caching minimum block size (tokens). We don't tokenise here,
+# so we apply a conservative byte-length floor (~4 chars/token).
+_CACHE_MIN_CHARS = 4096
+
+
 def call_claude(
     prompt=None,
     pdf_file_path=None,
@@ -150,6 +156,20 @@ def call_claude(
     max_output_tokens=None,
 ):
     """Call Claude with retries, PDF caching, and extended-thinking support.
+
+    ``pdf_file_path`` despite the name accepts any document path; the extension
+    decides how the file is sent:
+
+      - ``.pdf``       → uploaded via the Files API (incurs page-image tokens
+                         per page on every call; expensive on long papers).
+      - ``.md``/``.markdown``/``.txt`` → packed as a leading text content
+                         block with ``cache_control={"type": "ephemeral"}``
+                         so identical text content is reused at ~10% cost
+                         on subsequent stages within the 5-min cache window.
+
+    For long papers, the markdown path is roughly 5–10× cheaper on input
+    tokens (no page rasters) and another ~10× cheaper on cache hits across
+    the ~25 stages that read the source.
 
     ``CLAUDE_MODEL_OVERRIDE`` in the environment forces every call to a single
     model, useful for cheap smoke runs against Haiku.
@@ -217,12 +237,24 @@ def call_claude(
     max_delay = 300
     has_forced_reupload = False
 
+    # Decide how to deliver the source document. The leading position in the
+    # content array is the cacheable slot — for markdown, we mark it with
+    # cache_control so identical text reused across stages hits the cache.
+    is_pdf_upload = False
+    if pdf_file_path:
+        ext = os.path.splitext(pdf_file_path)[1].lower()
+        if ext == ".pdf":
+            is_pdf_upload = True
+        elif ext not in _TEXT_DOC_EXTENSIONS:
+            print(f"    ⚠  Unknown document extension '{ext}' — treating as PDF.")
+            is_pdf_upload = True
+
     while True:
         attempt += 1
 
         # Build the user-message content.
         content_parts = []
-        if pdf_file_path:
+        if is_pdf_upload:
             force = attempt > 1 and has_forced_reupload
             try:
                 file_id = get_or_upload_file(client, pdf_file_path, force_upload=force)
@@ -234,6 +266,15 @@ def call_claude(
                 print(f"    ⚠  Upload failed inside retry loop: {e}")
                 time.sleep(5)
                 continue
+        elif pdf_file_path:
+            try:
+                doc_text = Path(pdf_file_path).read_text(encoding="utf-8")
+            except Exception as e:
+                raise IOError(f"Failed to read text document '{pdf_file_path}': {e}")
+            doc_block = {"type": "text", "text": doc_text}
+            if len(doc_text) >= _CACHE_MIN_CHARS:
+                doc_block["cache_control"] = {"type": "ephemeral"}
+            content_parts.append(doc_block)
 
         if prompt:
             content_parts.append({"type": "text", "text": prompt})
@@ -256,7 +297,10 @@ def call_claude(
             kwargs["temperature"] = 1.0
 
         try:
-            if pdf_file_path:
+            # Files API beta header is only needed when actually uploading a
+            # PDF; markdown content goes through the standard messages
+            # endpoint (which supports prompt caching cleanly).
+            if is_pdf_upload:
                 response = client.beta.messages.create(betas=[_FILES_API_BETA], **kwargs)
             else:
                 response = client.messages.create(**kwargs)

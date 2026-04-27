@@ -5,17 +5,27 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+_SUPPORTED_INPUT_EXTS = (".pdf", ".md", ".markdown", ".txt", ".tex")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="presubmit",
-        description="Adversarial peer review for academic PDFs, powered by Google Gemini.",
+        description="Adversarial peer review for academic papers, powered by Anthropic Claude.",
     )
-    parser.add_argument("pdf", help="Path to the PDF to review.")
+    parser.add_argument(
+        "paper",
+        help="Path to the paper. Accepts .pdf (the renderered article — text "
+             "stages still get a markdown version internally for cheaper "
+             "tokens), .md / .markdown / .txt (used as-is for every stage; "
+             "vision-required stages fall back to the markdown), or .tex "
+             "(converted to markdown via pandoc on entry).",
+    )
     parser.add_argument(
         "-o", "--output", default="report.txt",
         help="Output text file path. Default: report.txt",
@@ -100,18 +110,76 @@ def _require_env(var: str, because: str) -> None:
         sys.exit(2)
 
 
+def _convert_tex_to_md(tex_path: Path) -> Path:
+    """Convert a .tex file to markdown via pandoc, into a temp file.
+
+    Tries to inline citations against a sibling .bib (same stem, or a .bib
+    in the same directory) when available. Raises SystemExit with a useful
+    message if pandoc isn't on PATH.
+    """
+    if shutil.which("pandoc") is None:
+        print(
+            "error: .tex input requires `pandoc` on PATH "
+            "(brew install pandoc / apt install pandoc / pacman -S pandoc).",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    out_md = Path(tempfile.mkstemp(prefix="presubmit_tex_", suffix=".md")[1])
+    cmd = ["pandoc", str(tex_path), "-t", "gfm", "-o", str(out_md)]
+
+    sibling_bib = tex_path.with_suffix(".bib")
+    if sibling_bib.exists():
+        cmd[1:1] = ["--citeproc", "--bibliography", str(sibling_bib)]
+    else:
+        # try any .bib in the same directory
+        bibs = list(tex_path.parent.glob("*.bib"))
+        if bibs:
+            cmd[1:1] = ["--citeproc", "--bibliography", str(bibs[0])]
+
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        print(f"error: pandoc conversion failed: {e.stderr.decode(errors='replace')[:500]}",
+              file=sys.stderr)
+        sys.exit(2)
+
+    print(f"  ✓ Pandoc → {out_md} ({out_md.stat().st_size:,} bytes).")
+    return out_md
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    pdf_path = Path(args.pdf).expanduser()
-    if not pdf_path.exists():
-        print(f"error: PDF not found: {pdf_path}", file=sys.stderr)
+    paper_path = Path(args.paper).expanduser()
+    if not paper_path.exists():
+        print(f"error: input not found: {paper_path}", file=sys.stderr)
         return 2
 
-    _require_env("ANTHROPIC_API_KEY", "for Gemini API access")
+    ext = paper_path.suffix.lower()
+    if ext not in _SUPPORTED_INPUT_EXTS:
+        print(
+            f"error: unsupported input format '{ext}'. "
+            f"Accepted: {', '.join(_SUPPORTED_INPUT_EXTS)}.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if ext == ".tex":
+        paper_path = _convert_tex_to_md(paper_path)
+        ext = ".md"
+
+    _require_env("ANTHROPIC_API_KEY", "for the Anthropic API")
     addons = resolve_addons(args)
     if addons["math"]:
+        if ext != ".pdf":
+            print(
+                "error: --math requires .pdf input (mathpix and equation "
+                "extraction need page rasters).",
+                file=sys.stderr,
+            )
+            return 2
         _require_env("MATHPIX_APP_ID", "for the --math add-on")
         _require_env("MATHPIX_APP_KEY", "for the --math add-on")
     output_path = Path(args.output).expanduser().resolve()
@@ -130,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         final_txt = run(
-            pdf_path=pdf_path,
+            pdf_path=paper_path,
             work_dir=work_dir,
             math=addons["math"],
             code=addons["code"],

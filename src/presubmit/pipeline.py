@@ -131,6 +131,79 @@ def _load_output(work_dir: Path, filename: str) -> str | None:
     return path.read_text(encoding="utf-8")
 
 
+def _ensure_markdown(pdf_path: Path, work_dir: Path) -> Path:
+    """Produce ``work_dir/paper.md`` from the source PDF, once.
+
+    Subsequent invocations reuse the cached file. We try ``marker`` first
+    (high-fidelity table/figure preservation) and fall back to ``pypdf`` text
+    extraction if marker isn't installed. Either way the output is plain
+    markdown, suitable for prompt-cached re-use across the ~25 stages that
+    don't need vision.
+    """
+    md_path = work_dir / "paper.md"
+    if md_path.exists() and md_path.stat().st_size > 0:
+        return md_path
+
+    print("  → Converting PDF → Markdown (one-time, for cheap text-stage reuse)...")
+
+    # Try marker. Its module path has churned across releases; we attempt the
+    # two known shapes and skip silently on any error.
+    if _try_marker_convert(pdf_path, md_path):
+        return md_path
+
+    # pypdf fallback. Loses table layout and figures but is dependency-free.
+    print("  ↳ marker not available; using pypdf text extraction "
+          "(install `marker-pdf` for higher fidelity).")
+    reader = PdfReader(str(pdf_path))
+    chunks = []
+    for i, page in enumerate(reader.pages, start=1):
+        text = (page.extract_text() or "").strip()
+        if text:
+            chunks.append(f"\n\n## Page {i}\n\n{text}")
+    md_path.write_text("".join(chunks), encoding="utf-8")
+    print(f"  ✓ Wrote {md_path.name} ({md_path.stat().st_size:,} bytes).")
+    return md_path
+
+
+def _try_marker_convert(pdf_path: Path, md_path: Path) -> bool:
+    """Best-effort marker conversion. Returns True on success."""
+    try:
+        from marker.convert import convert_single_pdf  # marker <= 0.x
+        from marker.models import load_all_models
+        models = load_all_models()
+        full_text, _, _ = convert_single_pdf(str(pdf_path), models)
+        md_path.write_text(full_text, encoding="utf-8")
+        print(f"  ✓ marker → {md_path.name} ({md_path.stat().st_size:,} bytes).")
+        return True
+    except Exception:
+        pass
+    try:
+        from marker.converters.pdf import PdfConverter  # marker >= 1.x
+        from marker.models import create_model_dict
+        from marker.output import text_from_rendered
+        converter = PdfConverter(artifact_dict=create_model_dict())
+        rendered = converter(str(pdf_path))
+        full_text, _, _ = text_from_rendered(rendered)
+        md_path.write_text(full_text, encoding="utf-8")
+        print(f"  ✓ marker → {md_path.name} ({md_path.stat().st_size:,} bytes).")
+        return True
+    except Exception:
+        return False
+
+
+# Stages that genuinely need PDF page rasters (layout, equations, figures).
+# Everything else gets the markdown — cheaper input and cache-friendly.
+_VISION_REQUIRED_STAGES: frozenset[str] = frozenset({
+    "01e_math",
+    "01e2_equation_extraction",
+    "01fa_math_check",
+    "01fb_math_proofread",
+    "01fc_math_audit",
+    "01fd_math_sober",
+    "09a_proofreader",
+})
+
+
 def _clean_code_issues_for_pdf(text: str) -> str:
     """Strip fenced code blocks and inline backticks; escape markdown underscores."""
     text = re.sub(r"```[^\n]*\n.*?```", "", text, flags=re.DOTALL)
@@ -269,20 +342,39 @@ def _run_inner(
     # -----------------------------------------------------------------------
     # SOURCE FILE SETUP
     # -----------------------------------------------------------------------
-    target_file = work_dir / "original_source.pdf"
+    # Two input shapes:
+    #   - .pdf input → canonical path is work_dir/original_source.pdf; we also
+    #     produce paper.md from it for cheap text stages.
+    #   - .md / .txt / .markdown input → no PDF; markdown_file becomes the
+    #     primary source. Vision-required stages (proofreader, math) fall
+    #     back to reading the markdown — quality on layout-only checks
+    #     degrades but the pipeline still completes.
+    input_ext = Path(pdf_path).suffix.lower()
+    is_pdf_input = input_ext == ".pdf"
+
+    target_file: Path | None = work_dir / "original_source.pdf" if is_pdf_input else None
     main_only_file = work_dir / "original_main_only.pdf"
 
-    if start_stage == 0.0 and not target_file.exists():
-        shutil.copy2(pdf_path, target_file)
-
-    if not target_file.exists():
-        raise PipelineError(f"Source PDF missing at {target_file} (resume from start_stage=0.0)")
+    if is_pdf_input:
+        if start_stage == 0.0 and not target_file.exists():
+            shutil.copy2(pdf_path, target_file)
+        if not target_file.exists():
+            raise PipelineError(f"Source PDF missing at {target_file} (resume from start_stage=0.0)")
+    else:
+        # Stage the markdown source under work_dir so resume + cache survive.
+        md_canonical = work_dir / "paper.md"
+        if start_stage == 0.0 and not md_canonical.exists():
+            shutil.copy2(pdf_path, md_canonical)
+        if not md_canonical.exists():
+            raise PipelineError(
+                f"Markdown source missing at {md_canonical} (resume from start_stage=0.0)"
+            )
 
     # -----------------------------------------------------------------------
-    # EARLY CIRCUIT BREAKER (page-limit sanity check)
+    # EARLY CIRCUIT BREAKER (page-limit sanity check) — PDF input only
     # -----------------------------------------------------------------------
     early_code_pdf = work_dir / "_early_code.pdf"
-    if start_stage == 0.0 and do_code and code_dir and code_dir.exists():
+    if is_pdf_input and start_stage == 0.0 and do_code and code_dir and code_dir.exists():
         try:
             print("  → Pre-flight: compiling replication package for size check...")
             ordered = _walk_code_dir(code_dir)
@@ -307,9 +399,9 @@ def _run_inner(
             print(f"  ⚠ Pre-flight volume check failed (non-fatal): {e}")
 
     # -----------------------------------------------------------------------
-    # PDF SUPPLEMENT MERGE (if any)
+    # PDF SUPPLEMENT MERGE (if any) — PDF input only
     # -----------------------------------------------------------------------
-    if start_stage == 0.0 and supp_pdfs:
+    if is_pdf_input and start_stage == 0.0 and supp_pdfs:
         staging = work_dir / "_merge_staging"
         if staging.exists():
             shutil.rmtree(staging)
@@ -334,6 +426,23 @@ def _run_inner(
                 shutil.rmtree(staging)
 
     # -----------------------------------------------------------------------
+    # MARKDOWN SOURCE (cheap text path for non-vision stages)
+    # -----------------------------------------------------------------------
+    # ~25 of the ~30 stages just read the paper as text — Red Team, Blue
+    # Team, reviewer, etc. Sending the PDF on each of those uploads ~140K
+    # page-image tokens *per call*. We convert once to markdown here and
+    # route those stages through ``markdown_file`` instead. The PDF path is
+    # preserved for layout-/equation-aware stages (proofreader, math).
+    if is_pdf_input:
+        markdown_file = _ensure_markdown(target_file, work_dir)
+    else:
+        markdown_file = work_dir / "paper.md"
+
+    # When there's no PDF, vision-required stages fall back to the markdown.
+    # ``vision_source`` is the path passed to those stages.
+    vision_source = target_file if target_file is not None else markdown_file
+
+    # -----------------------------------------------------------------------
     # METADATA
     # -----------------------------------------------------------------------
     metadata: dict = {}
@@ -352,11 +461,11 @@ def _run_inner(
     # ====================================================================
     if start_stage <= 0.05 and stop_stage >= 0.0:
         s00a = _run_stage_with_retry(
-            lambda: stages.stage_00a_metadata(str(target_file), str(work_dir)),
+            lambda: stages.stage_00a_metadata(str(markdown_file), str(work_dir)),
             "00a_metadata", max_retries, work_dir=work_dir,
         )
         metadata = _run_stage_with_retry(
-            lambda: stages.stage_00b_metadata_clean(s00a, str(target_file), str(work_dir)),
+            lambda: stages.stage_00b_metadata_clean(s00a, str(markdown_file), str(work_dir)),
             "00b_metadata_clean", max_retries,
             work_dir=work_dir, cached_loader=extract_info_fields,
         )
@@ -376,7 +485,7 @@ def _run_inner(
 
     if start_stage <= 0.9 and stop_stage >= 0.9:
         _run_stage_with_retry(
-            lambda: stages.stage_00c_contributions(str(target_file), metadata, str(work_dir)),
+            lambda: stages.stage_00c_contributions(str(markdown_file), metadata, str(work_dir)),
             "00c_contributions", max_retries, work_dir=work_dir,
         )
 
@@ -403,24 +512,24 @@ def _run_inner(
                 if start_stage <= 1.0 and stop_stage >= 1.0:
                     futures["01a"] = ex.submit(
                         _run_stage_with_retry,
-                        lambda: stages.stage_01a_breaker(str(target_file), metadata, str(work_dir), s00c),
+                        lambda: stages.stage_01a_breaker(str(markdown_file), metadata, str(work_dir), s00c),
                         "01a_breaker", max_retries, work_dir=work_dir,
                     )
                 if start_stage <= 1.1 and stop_stage >= 1.1:
                     futures["01b"] = ex.submit(
                         _run_stage_with_retry,
-                        lambda: stages.stage_01b_butcher(str(target_file), metadata, str(work_dir), s00c),
+                        lambda: stages.stage_01b_butcher(str(markdown_file), metadata, str(work_dir), s00c),
                         "01b_butcher", max_retries, work_dir=work_dir,
                     )
                     futures["01c"] = ex.submit(
                         _run_stage_with_retry,
-                        lambda: stages.stage_01c_shredder(str(target_file), metadata, str(work_dir), s00c),
+                        lambda: stages.stage_01c_shredder(str(markdown_file), metadata, str(work_dir), s00c),
                         "01c_shredder", max_retries, work_dir=work_dir,
                     )
                 if start_stage <= 1.6 and stop_stage >= 1.6:
                     futures["01g"] = ex.submit(
                         _run_stage_with_retry,
-                        lambda: stages.stage_01g_the_void(str(target_file), s00c, metadata, str(work_dir)),
+                        lambda: stages.stage_01g_the_void(str(markdown_file), s00c, metadata, str(work_dir)),
                         "01g_the_void", max_retries, work_dir=work_dir,
                     )
                 s01a = futures["01a"].result() if "01a" in futures else _load_output(work_dir, "01a_breaker.txt")
@@ -430,7 +539,7 @@ def _run_inner(
 
             if start_stage <= 1.2 and stop_stage >= 1.2:
                 s01d = _run_stage_with_retry(
-                    lambda: stages.stage_01d_collector(str(target_file), s01b, s01c, metadata, str(work_dir)),
+                    lambda: stages.stage_01d_collector(str(markdown_file), s01b, s01c, metadata, str(work_dir)),
                     "01d_collector", max_retries, work_dir=work_dir,
                 )
             else:
@@ -438,7 +547,7 @@ def _run_inner(
         else:
             if start_stage <= 1.0 and stop_stage >= 1.0:
                 s01a = _run_stage_with_retry(
-                    lambda: stages.stage_01a_breaker(str(target_file), metadata, str(work_dir), s00c),
+                    lambda: stages.stage_01a_breaker(str(markdown_file), metadata, str(work_dir), s00c),
                     "01a_breaker", max_retries, work_dir=work_dir,
                 )
             else:
@@ -447,7 +556,7 @@ def _run_inner(
             if start_stage <= 1.1 and stop_stage >= 1.1:
                 s01a = s01a or _load_output(work_dir, "01a_breaker.txt")
                 s01a_2 = _run_stage_with_retry(
-                    lambda: stages.stage_01a_2_breaker_revisit(str(target_file), s01a, metadata, str(work_dir)),
+                    lambda: stages.stage_01a_2_breaker_revisit(str(markdown_file), s01a, metadata, str(work_dir)),
                     "01a_2_breaker_revisit", max_retries, work_dir=work_dir,
                 )
             else:
@@ -460,7 +569,7 @@ def _run_inner(
             # it in the parallel block above.
             if start_stage <= 1.6 and stop_stage >= 1.6:
                 s01g = _run_stage_with_retry(
-                    lambda: stages.stage_01g_the_void(str(target_file), s00c, metadata, str(work_dir)),
+                    lambda: stages.stage_01g_the_void(str(markdown_file), s00c, metadata, str(work_dir)),
                     "01g_the_void", max_retries, work_dir=work_dir,
                 )
             else:
@@ -469,7 +578,7 @@ def _run_inner(
         # Math path (01e always; 01e2/01fa-01fd only if do_math)
         if start_stage <= 1.3 and stop_stage >= 1.3:
             s01e = _run_stage_with_retry(
-                lambda: stages.stage_01e_math_extract(str(target_file), s00c, metadata, str(work_dir)),
+                lambda: stages.stage_01e_math_extract(str(vision_source), s00c, metadata, str(work_dir)),
                 "01e_math", max_retries, work_dir=work_dir,
             )
         else:
@@ -478,7 +587,7 @@ def _run_inner(
         if do_math:
             if start_stage <= 1.35 and stop_stage >= 1.35:
                 s01e2 = _run_stage_with_retry(
-                    lambda: stages.stage_01e2_equation_extraction(str(target_file), metadata, str(work_dir)),
+                    lambda: stages.stage_01e2_equation_extraction(str(vision_source), metadata, str(work_dir)),
                     "01e2_equation_extraction", max_retries, work_dir=work_dir,
                 )
             else:
@@ -486,10 +595,10 @@ def _run_inner(
 
             if start_stage <= 1.4 and stop_stage >= 1.4:
                 s01fa = _run_stage_with_retry(
-                    lambda: stages.stage_01fa_math_check(str(target_file), s00c, metadata, str(work_dir), equations=s01e2),
+                    lambda: stages.stage_01fa_math_check(str(vision_source), s00c, metadata, str(work_dir), equations=s01e2),
                     "01fa_math_check", max_retries, work_dir=work_dir,
                 )
-                proofread_pdf = str(main_only_file) if main_only_file.exists() else str(target_file)
+                proofread_pdf = str(main_only_file) if main_only_file.exists() else str(vision_source)
                 s01fb = _run_stage_with_retry(
                     lambda: stages.stage_01fb_math_proofread(proofread_pdf, s00c, metadata, str(work_dir), equations=s01e2),
                     "01fb_math_proofread", max_retries, work_dir=work_dir,
@@ -501,7 +610,7 @@ def _run_inner(
             if start_stage <= 1.5 and stop_stage >= 1.5:
                 s01fb = s01fb or _load_output(work_dir, "01fb_math_proofread.txt") or ""
                 s01fc = _run_stage_with_retry(
-                    lambda: stages.stage_01fc_math_audit(str(target_file), s01fb, s00c, metadata, str(work_dir), equations=s01e2),
+                    lambda: stages.stage_01fc_math_audit(str(vision_source), s01fb, s00c, metadata, str(work_dir), equations=s01e2),
                     "01fc_math_audit", max_retries, work_dir=work_dir,
                 )
             else:
@@ -513,7 +622,7 @@ def _run_inner(
                 s01fc = s01fc or _load_output(work_dir, "01fc_math_audit.txt") or ""
                 mathpix_raw = _load_output(work_dir, "01e2_mathpix_raw.txt")
                 s01fd = _run_stage_with_retry(
-                    lambda: stages.stage_01fd_math_sober(str(target_file), s01fa, s01fb, s01fc, s00c, metadata, str(work_dir), equations=s01e2, mathpix_raw=mathpix_raw),
+                    lambda: stages.stage_01fd_math_sober(str(vision_source), s01fa, s01fb, s01fc, s00c, metadata, str(work_dir), equations=s01e2, mathpix_raw=mathpix_raw),
                     "01fd_math_sober", max_retries, work_dir=work_dir,
                 )
                 s01f_alg = s01fd
@@ -524,6 +633,11 @@ def _run_inner(
 
         # Code analysis
         if do_code and code_dir and code_dir.exists():
+            if not is_pdf_input:
+                raise PipelineError(
+                    "--code-dir requires .pdf input (the code-audit pipeline "
+                    "merges the paper PDF with a compiled-code PDF)."
+                )
             print("\n  → CODE ANALYSIS MODE ENABLED")
             if start_stage <= 1.7:
                 if early_code_pdf.exists():
@@ -603,13 +717,13 @@ def _run_inner(
         print("  🛑 Reached Stop Stage (Pre-Stage 2).")
         return _finalize_no_render(work_dir)
 
-    s02g = _run_stage_2(str(target_file), potential_issues, s00c, metadata, work_dir, s01e2, start_stage, stop_stage, max_retries)
+    s02g = _run_stage_2(str(markdown_file), potential_issues, s00c, metadata, work_dir, s01e2, start_stage, stop_stage, max_retries)
 
     if stop_stage < 3.0:
         print("  🛑 Reached Stop Stage (Pre-Stage 3).")
         return _finalize_no_render(work_dir)
 
-    final_list_for_reviewer = _run_stage_3(str(target_file), s02g, metadata, work_dir, s01e2, start_stage, stop_stage, max_retries)
+    final_list_for_reviewer = _run_stage_3(str(markdown_file), s02g, metadata, work_dir, s01e2, start_stage, stop_stage, max_retries)
 
     # ====================================================================
     # STAGE 4: REVIEWER
@@ -620,7 +734,7 @@ def _run_inner(
 
     if start_stage <= 4.0 and stop_stage >= 4.0:
         s04 = _run_stage_with_retry(
-            lambda: stages.stage_04a_reviewer(str(target_file), s00c, final_list_for_reviewer, metadata, str(work_dir)),
+            lambda: stages.stage_04a_reviewer(str(markdown_file), s00c, final_list_for_reviewer, metadata, str(work_dir)),
             "04a_reviewer", max_retries, work_dir=work_dir,
         )
     else:
@@ -634,7 +748,7 @@ def _run_inner(
         return _finalize_no_render(work_dir)
 
     full_review_draft = _assemble_full_review(s04, final_list_for_reviewer)
-    final_review_text = _run_stage_5(str(target_file), full_review_draft, metadata, work_dir, s01e2, start_stage, stop_stage, max_retries)
+    final_review_text = _run_stage_5(str(markdown_file), full_review_draft, metadata, work_dir, s01e2, start_stage, stop_stage, max_retries)
 
     # ====================================================================
     # STAGE 6: LEGAL
@@ -691,7 +805,7 @@ def _run_inner(
         if stop_stage < 8.0:
             print("  🛑 Reached Stop Stage (Pre-Writer Mode).")
             return _finalize_no_render(work_dir)
-        _run_writer_mode(str(target_file), final_body, metadata, work_dir, start_stage, stop_stage, max_retries)
+        _run_writer_mode(str(target_file), str(markdown_file), final_body, metadata, work_dir, start_stage, stop_stage, max_retries)
 
     # ====================================================================
     # PYTHON TEXT RENDER (replaces the three R renderers)
@@ -865,16 +979,20 @@ def _run_stage_5(target_file, full_review_draft, metadata, work_dir, s01e2, star
     return s05c
 
 
-def _run_writer_mode(target_file, s07_review, metadata, work_dir, start_stage, stop_stage, max_retries):
+def _run_writer_mode(pdf_file, markdown_file, s07_review, metadata, work_dir, start_stage, stop_stage, max_retries):
     """Writer Mode pipeline (stages 08a–09c), parallelised by dependency.
 
     Phases:
-      1. 08a (alchemist) ‖ 09a (proofreader) — both read the paper directly.
+      1. 08a (alchemist, markdown) ‖ 09a (proofreader, **PDF** for layout).
       2. 08b (polisher, needs 08a) ‖ 09b (proofread clean, needs 09a).
       3. 09c (copyedit, needs 08a + 08b).
 
     Per-step retries come from ``_run_stage_with_retry``; cached outputs from a
     prior run skip automatically.
+
+    The proofreader is the only writer-mode stage that genuinely needs the
+    rendered PDF (it's checking layout, hyphenation, widow/orphans, etc.).
+    Everything else reads the markdown source for cheaper input + cache hits.
     """
     print("\n═══════════════════════════════════════════════════════════════════")
     print("   ENTERING WRITER MODE")
@@ -884,19 +1002,19 @@ def _run_writer_mode(target_file, s07_review, metadata, work_dir, start_stage, s
     # for the reader, not revision advice.
     alchemist_input = re.sub(r"\n*## Data Editor\n.*", "", s07_review, flags=re.DOTALL)
 
-    # Phase 1: 08a + 09a (both read the paper directly).
+    # Phase 1: 08a (markdown) + 09a (PDF — needs visual layout).
     with ThreadPoolExecutor(max_workers=2) as ex:
         phase1: dict[str, Any] = {}
         if start_stage <= 8.0 and stop_stage >= 8.0:
             phase1["08a"] = ex.submit(
                 _run_stage_with_retry,
-                lambda: stages.stage_08a_alchemist(target_file, alchemist_input, metadata, str(work_dir)),
+                lambda: stages.stage_08a_alchemist(markdown_file, alchemist_input, metadata, str(work_dir)),
                 "08a_alchemist", max_retries, work_dir=work_dir,
             )
         if start_stage <= 9.0 and stop_stage >= 9.0:
             phase1["09a"] = ex.submit(
                 _run_stage_with_retry,
-                lambda: stages.stage_09a_proofreader(target_file, metadata, str(work_dir)),
+                lambda: stages.stage_09a_proofreader(pdf_file, metadata, str(work_dir)),
                 "09a_proofreader", max_retries, work_dir=work_dir,
             )
         for fid, fut in phase1.items():
@@ -934,12 +1052,13 @@ def _run_writer_mode(target_file, s07_review, metadata, work_dir, start_stage, s
     if stop_stage < 9.2:
         return
 
-    # Phase 3: 09c needs 08a + 08b.
+    # Phase 3: 09c needs 08a + 08b. Reads the source for context — markdown is
+    # enough; copyedit doesn't depend on layout.
     if start_stage <= 9.2 and stop_stage >= 9.2:
         s08a_inst = _load_output(work_dir, "08a_alchemist_instructions.txt") or "Instructions missing."
         polished = s08b or "Note missing."
         _run_stage_with_retry(
-            lambda: stages.stage_09c_copyedit(target_file, alchemist_input, polished, s08a_inst, metadata, str(work_dir)),
+            lambda: stages.stage_09c_copyedit(markdown_file, alchemist_input, polished, s08a_inst, metadata, str(work_dir)),
             "09c_copyedit", max_retries, work_dir=work_dir,
         )
 
