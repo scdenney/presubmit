@@ -360,6 +360,19 @@ def call_claude(
             if "FATAL" in err_str:
                 raise
 
+            # Hard 400 errors that won't resolve by retrying — fail fast so we
+            # don't burn the per-call retry budget (and the caller's time) on
+            # something only a billing/auth change can fix.
+            if status_code == 400 and any(
+                tag in err_str.lower()
+                for tag in ("credit balance", "billing", "insufficient_quota")
+            ):
+                raise RuntimeError(
+                    f"FATAL: Anthropic API rejected the request (status 400) for a "
+                    f"billing/credit reason — retrying won't help. Top up at "
+                    f"console.anthropic.com/settings/billing. Original error: {err_str}"
+                )
+
             if status_code == 403 and ("file" in err_str.lower() or "not_found" in err_str.lower()):
                 print("    ⚠  File Permission/Access Error (403). Forcing re-upload next attempt.")
                 has_forced_reupload = True
