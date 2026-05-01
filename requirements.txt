@@ -2,7 +2,7 @@
 # Authoritative source is pyproject.toml; this file is for `pip install -r`
 # convenience and for CI cache keys.
 
-anthropic>=0.40.0
+anthropic>=0.60.0
 marker-pdf
 pypdf
 reportlab
