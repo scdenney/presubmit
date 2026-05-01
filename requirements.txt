@@ -3,6 +3,7 @@
 # convenience and for CI cache keys.
 
 anthropic>=0.40.0
+marker-pdf
 pypdf
 reportlab
 requests

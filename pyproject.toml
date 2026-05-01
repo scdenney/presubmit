@@ -26,6 +26,7 @@ classifiers = [
 ]
 dependencies = [
     "anthropic>=0.40.0",
+    "marker-pdf",
     "pypdf",
     "reportlab",
     "requests",

@@ -134,39 +134,30 @@ def _load_output(work_dir: Path, filename: str) -> str | None:
 def _ensure_markdown(pdf_path: Path, work_dir: Path) -> Path:
     """Produce ``work_dir/paper.md`` from the source PDF, once.
 
-    Subsequent invocations reuse the cached file. We try ``marker`` first
-    (high-fidelity table/figure preservation) and fall back to ``pypdf`` text
-    extraction if marker isn't installed. Either way the output is plain
-    markdown, suitable for prompt-cached re-use across the ~25 stages that
-    don't need vision.
+    Subsequent invocations reuse the cached file. ``marker-pdf`` is a hard
+    runtime dependency — we deliberately do not fall back to plain ``pypdf``
+    text extraction if marker fails, since the text-only fallback loses
+    table structure and figure captions and materially weakens what the
+    Butcher / Numbers / Reviewer stages can reason about. If you need to
+    bypass marker, pass a pre-converted ``.md`` / ``.markdown`` / ``.tex``
+    file directly — the CLI accepts those.
     """
     md_path = work_dir / "paper.md"
     if md_path.exists() and md_path.stat().st_size > 0:
         return md_path
 
-    print("  → Converting PDF → Markdown (one-time, for cheap text-stage reuse)...")
-
-    # Try marker. Its module path has churned across releases; we attempt the
-    # two known shapes and skip silently on any error.
-    if _try_marker_convert(pdf_path, md_path):
-        return md_path
-
-    # pypdf fallback. Loses table layout and figures but is dependency-free.
-    print("  ↳ marker not available; using pypdf text extraction "
-          "(install `marker-pdf` for higher fidelity).")
-    reader = PdfReader(str(pdf_path))
-    chunks = []
-    for i, page in enumerate(reader.pages, start=1):
-        text = (page.extract_text() or "").strip()
-        if text:
-            chunks.append(f"\n\n## Page {i}\n\n{text}")
-    md_path.write_text("".join(chunks), encoding="utf-8")
-    print(f"  ✓ Wrote {md_path.name} ({md_path.stat().st_size:,} bytes).")
+    print("  → Converting PDF → Markdown via marker-pdf (one-time, for cheap text-stage reuse)...")
+    _marker_convert(pdf_path, md_path)
     return md_path
 
 
-def _try_marker_convert(pdf_path: Path, md_path: Path) -> bool:
-    """Best-effort marker conversion. Returns True on success."""
+def _marker_convert(pdf_path: Path, md_path: Path) -> None:
+    """Convert ``pdf_path`` to markdown at ``md_path`` using marker-pdf.
+
+    Tries the two known module shapes (marker <= 0.x and >= 1.x). Raises
+    ``PipelineError`` if neither works.
+    """
+    last_err: Exception | None = None
     try:
         from marker.convert import convert_single_pdf  # marker <= 0.x
         from marker.models import load_all_models
@@ -174,9 +165,12 @@ def _try_marker_convert(pdf_path: Path, md_path: Path) -> bool:
         full_text, _, _ = convert_single_pdf(str(pdf_path), models)
         md_path.write_text(full_text, encoding="utf-8")
         print(f"  ✓ marker → {md_path.name} ({md_path.stat().st_size:,} bytes).")
-        return True
-    except Exception:
+        return
+    except ImportError:
         pass
+    except Exception as e:
+        last_err = e
+
     try:
         from marker.converters.pdf import PdfConverter  # marker >= 1.x
         from marker.models import create_model_dict
@@ -186,9 +180,19 @@ def _try_marker_convert(pdf_path: Path, md_path: Path) -> bool:
         full_text, _, _ = text_from_rendered(rendered)
         md_path.write_text(full_text, encoding="utf-8")
         print(f"  ✓ marker → {md_path.name} ({md_path.stat().st_size:,} bytes).")
-        return True
-    except Exception:
-        return False
+        return
+    except ImportError as e:
+        raise PipelineError(
+            "marker-pdf is required but not importable. "
+            "Install with `pip install marker-pdf`, or pass a pre-converted "
+            ".md / .markdown / .tex file as input to bypass marker."
+        ) from e
+    except Exception as e:
+        raise PipelineError(
+            f"marker-pdf failed converting {pdf_path}. "
+            f"Latest error: {e}. "
+            f"Earlier (<=0.x API) error: {last_err}."
+        ) from e
 
 
 # Stages that genuinely need PDF page rasters (layout, equations, figures).

@@ -18,10 +18,25 @@ Takes a manuscript PDF and produces a plain-text critical review via a 30+ stage
 
 Output is one `report.txt` plus, optionally, an editor's note and copyediting suggestions. Runs are **resumable**: deleting a stage file in the work directory forces that stage (and dependents) to re-run on the next invocation.
 
+## PDF handling and cost
+
+`presubmit` does **not** re-upload the source PDF to every Claude call. It would be a token muncher: an 80-page paper sent as PDF burns ~500K input tokens per stage (page rasters are ~1.6K tokens each), and across 30+ stages that runs ~$25–60 per paper on Opus 4.7. So the pipeline does not work that way.
+
+Instead, the pipeline converts the PDF to markdown **once** at start (using [`marker-pdf`](https://github.com/VikParuchuri/marker), which preserves table structure and figure captions) and routes ~25 of the ~30 stages to that markdown. The markdown is sent as a cache-controlled content block, so the second through Nth stages within Anthropic's 5-minute prompt-cache window pay roughly 10% of the first call's input cost.
+
+The 7 stages that genuinely need page rasters — the math chain (`01e`, `01e2`, `01fa`–`01fd`) and `09a_proofreader` (which checks layout) — keep using the PDF directly. Everything else reasons over the markdown.
+
+**Estimated cost on a typical 80-page paper, Opus 4.7:** ~$2–4 per full run with this routing. Without the PDF→markdown step, the same paper would cost ~$25–30.
+
+**Why `marker-pdf` is a hard dependency.** `marker-pdf` is what makes the converted markdown high-fidelity enough to substitute for the PDF on text-only stages. Plain `pypdf` text extraction loses table structure and figure captions, which materially weakens what the Butcher / Numbers / Reviewer stages can reason about on table-heavy papers. The pipeline therefore refuses to fall back to it; if marker fails to import or convert, the run halts with `PipelineError` rather than producing a degraded review silently. If you need to bypass marker (e.g., you already have the source as `.md` or `.tex`), pass that file directly — the CLI accepts any of `.pdf`, `.md`, `.markdown`, `.txt`, `.tex`.
+
+**Cost of the dependency itself.** `marker-pdf` pulls in PyTorch and a few GB of ML model weights (downloaded on first conversion to the local Hugging Face cache, reused after that). Initial install is slow (~5–10 minutes); first conversion downloads ~3–5 GB of models; subsequent conversions take ~30 seconds to a few minutes per PDF depending on page count and whether you have GPU/MPS available.
+
 ## Requirements
 
 - Python 3.10+
 - An Anthropic API key ([console.anthropic.com](https://console.anthropic.com/))
+- `marker-pdf` (installed automatically via `pip install -e .`; pulls in PyTorch and a few GB of ML models on first use — see "PDF handling and cost" above)
 - `qpdf` on `PATH` for PDF preprocessing (optional; python fallback exists)
 - (Optional) A Mathpix account for the math-audit add-on
 
@@ -32,8 +47,11 @@ Clone and install in editable mode:
 ```bash
 git clone https://github.com/scdenney/presubmit
 cd presubmit
+python3 -m venv .venv && source .venv/bin/activate    # recommended; marker pulls in heavy deps
 pip install -e .
 ```
+
+Initial install takes 5–10 minutes because of `marker-pdf` and its PyTorch dependency. The first PDF conversion downloads model weights (~3–5 GB) the first time.
 
 ## Quickstart
 
@@ -42,12 +60,20 @@ export ANTHROPIC_API_KEY=your_key_here
 presubmit paper.pdf -o report.txt
 ```
 
+The CLI accepts `.pdf`, `.md`, `.markdown`, `.txt`, and `.tex` (the last is auto-converted via `pandoc`). For PDFs the conversion-to-markdown step runs once at the start of the pipeline and is cached in the work directory.
+
 A default run hits the API 30–40 times. Wall time is ~15–45 minutes depending on paper length and how much Extended Thinking the heavy-reasoning stages use. Cost depends on which Claude tier each stage routes to (see `src/presubmit/core.py` → `MODELS`).
 
 For a cheap smoke run, force every stage to Haiku:
 
 ```bash
 CLAUDE_MODEL_OVERRIDE=haiku presubmit paper.pdf -o smoke.txt
+```
+
+To stop after the Red Team passes (useful for verifying the markdown conversion + first round of stages without committing to a full run):
+
+```bash
+presubmit paper.pdf -o smoke.txt --stop-stage 2.0
 ```
 
 ## Known trade-offs vs. upstream Gemini
