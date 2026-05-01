@@ -53,10 +53,32 @@ pip install -e .
 
 Initial install takes 5–10 minutes because of `marker-pdf` and its PyTorch dependency. The first PDF conversion downloads model weights (~3–5 GB) the first time.
 
+## API key setup
+
+`presubmit` calls the Anthropic API directly via the official Python SDK. It does **not** authenticate via the `claude` CLI's OAuth subscription or via your claude.ai login — those are different auth surfaces. You need a personal API key on your Anthropic account.
+
+1. Generate a key at [console.anthropic.com](https://console.anthropic.com/) → **Settings** → **API Keys** → **Create Key**. Keys look like `sk-ant-api03-...`.
+2. Add an export line to your shell rc (e.g. `~/.zshrc` for zsh, `~/.bashrc` for bash):
+
+   ```bash
+   export ANTHROPIC_API_KEY="sk-ant-api03-..."
+   ```
+
+   If your shell rc also has wrapper functions or aliases that set `ANTHROPIC_API_KEY` to a different value (e.g. setting it to `""` to route the `claude` CLI through a local Ollama server), put the real `export` line **above** those wrappers so a later assignment doesn't shadow the key in your default shell environment.
+
+3. Reload the shell (`source ~/.zshrc` or open a new terminal) and verify:
+
+   ```bash
+   echo "${ANTHROPIC_API_KEY:0:8}…"   # should print sk-ant-a…
+   ```
+
+4. Make sure the account has a positive credit balance. The pipeline hits the API 30–40 times per paper; without credit it halts on the first call (the fail-fast behavior is intentional — see commit history).
+
+The key is billed to your Anthropic account and is independent of any Claude Code or claude.ai subscription you have.
+
 ## Quickstart
 
 ```bash
-export ANTHROPIC_API_KEY=your_key_here
 presubmit paper.pdf -o report.txt
 ```
 
