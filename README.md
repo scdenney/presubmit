@@ -76,10 +76,25 @@ Initial install takes 5–10 minutes because of `marker-pdf` and its PyTorch dep
 
 The key is billed to your Anthropic account and is independent of any Claude Code or claude.ai subscription you have.
 
+## Output location
+
+By default, intermediate stage outputs land in a temp directory that gets cleaned up after the run — almost never what you want, since the per-stage files (`01a_breaker.txt`, `02e_assessment.txt`, etc.) are often more useful than the consolidated final report. Three ways to control where outputs land, in order of precedence:
+
+1. **`--work-dir <path>` flag** (highest priority). Always wins, never auto-cleaned. Use this for one-off runs or when you want to override the default.
+2. **`PRESUBMIT_OUTPUT_BASE` env var** (recommended). If set, presubmit derives `<base>/<slug>/presubmit_run/` from the input filename automatically. Set once in your shell rc and forget about `--work-dir`:
+
+   ```bash
+   export PRESUBMIT_OUTPUT_BASE="$HOME/presubmit-reviews"   # or wherever you want
+   ```
+
+   The slug is the input filename, lowercased, with non-alphanumeric runs collapsed to single hyphens. So `Denney_2026_What-Were-They-Thinking.pdf` becomes `denney_2026_what-were-they-thinking`, and the run lands in `~/presubmit-reviews/denney_2026_what-were-they-thinking/presubmit_run/`.
+
+3. **Neither set** — falls back to a temp dir with a warning telling you to set one of the above. The pipeline still runs, but the stage files may be garbage-collected.
+
 ## Quickstart
 
 ```bash
-presubmit paper.pdf -o report.txt
+presubmit paper.pdf
 ```
 
 The CLI accepts `.pdf`, `.md`, `.markdown`, `.txt`, and `.tex` (the last is auto-converted via `pandoc`). For PDFs the conversion-to-markdown step runs once at the start of the pipeline and is cached in the work directory.

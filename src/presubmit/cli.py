@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -65,9 +66,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument(
         "--work-dir", default=None,
-        help="Directory for intermediate stage outputs. Default: a temp dir that is "
-             "cleaned up on success. Pass an explicit path to keep the outputs or to "
-             "resume a previous run.",
+        help="Directory for intermediate stage outputs and the consolidated report. "
+             "Resume semantics: re-running with the same --work-dir picks up from the "
+             "last successful stage. If unset, falls back to PRESUBMIT_OUTPUT_BASE/"
+             "<slug>/presubmit_run/ when that env var is defined; otherwise to a temp "
+             "dir (with a warning, since stage outputs are then garbage-collected).",
     )
     parser.add_argument(
         "--keep-work-dir", action="store_true",
@@ -108,6 +111,56 @@ def _require_env(var: str, because: str) -> None:
     if not os.environ.get(var):
         print(f"error: {var} not set. Required {because}.", file=sys.stderr)
         sys.exit(2)
+
+
+def _derive_slug(paper_path: Path) -> str:
+    """Slugify a paper's filename.
+
+    Lowercases the stem, collapses runs of non-alphanumeric characters
+    (other than underscore) into single hyphens, strips trailing
+    hyphens/underscores. Underscores inside the stem are preserved so a
+    filename like ``Denney_2026_What-Were-They-Thinking.pdf`` round-trips
+    to ``denney_2026_what-were-they-thinking``.
+    """
+    stem = paper_path.stem
+    slug = re.sub(r"[^A-Za-z0-9_]+", "-", stem)
+    slug = re.sub(r"-+", "-", slug).lower().strip("-_")
+    return slug or "paper"
+
+
+def _resolve_work_dir(args: argparse.Namespace, paper_path: Path) -> tuple[Path, bool]:
+    """Resolve the work directory for this run.
+
+    Precedence:
+      1. ``--work-dir`` explicit (always wins, never auto-cleaned).
+      2. ``$PRESUBMIT_OUTPUT_BASE`` env var → ``<base>/<slug>/presubmit_run/``.
+      3. Temp dir (current default; print a discoverability warning).
+
+    Returns ``(work_dir, cleanup_after_success)``.
+    """
+    if args.work_dir:
+        wd = Path(args.work_dir).expanduser().resolve()
+        wd.mkdir(parents=True, exist_ok=True)
+        return wd, False
+
+    base_env = os.environ.get("PRESUBMIT_OUTPUT_BASE", "").strip()
+    if base_env:
+        base = Path(base_env).expanduser().resolve()
+        slug = _derive_slug(paper_path)
+        wd = base / slug / "presubmit_run"
+        wd.mkdir(parents=True, exist_ok=True)
+        print(f"  → PRESUBMIT_OUTPUT_BASE → {wd}")
+        return wd, False
+
+    wd = Path(tempfile.mkdtemp(prefix="presubmit_"))
+    print(
+        f"  ⚠  No --work-dir or PRESUBMIT_OUTPUT_BASE set. Stage outputs will land in a\n"
+        f"     temp dir ({wd}) and may be cleaned up after this run. To keep them, either\n"
+        f"       (a) pass --work-dir <path> explicitly, or\n"
+        f"       (b) set, e.g. `export PRESUBMIT_OUTPUT_BASE=~/presubmit-reviews` in your shell rc.",
+        file=sys.stderr,
+    )
+    return wd, not args.keep_work_dir
 
 
 def _convert_tex_to_md(tex_path: Path) -> Path:
@@ -185,13 +238,7 @@ def main(argv: list[str] | None = None) -> int:
     output_path = Path(args.output).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if args.work_dir:
-        work_dir = Path(args.work_dir).expanduser().resolve()
-        work_dir.mkdir(parents=True, exist_ok=True)
-        cleanup_work_dir = False
-    else:
-        work_dir = Path(tempfile.mkdtemp(prefix="presubmit_"))
-        cleanup_work_dir = not args.keep_work_dir
+    work_dir, cleanup_work_dir = _resolve_work_dir(args, paper_path)
 
     # Defer import to keep --help fast and avoid pulling in genai unnecessarily.
     from presubmit.pipeline import PipelineError, run
