@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/social-preview.png" alt="presubmit: adversarial peer review for academic PDFs" width="100%">
+</p>
+
 # presubmit
 
 **Adversarial peer review for academic PDFs, powered by Anthropic Claude.**
@@ -193,7 +197,9 @@ These differ from `presubmit` in two axes: (a) whether they run an **adversarial
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE). See [NOTICE](NOTICE) for upstream attribution and trademark notes.
+CC BY 4.0. See [LICENSE](LICENSE).
+
+This project is built for remixing, reuse, and adaptation, including commercial use, with attribution. It is derived from [`reviewer2`](https://github.com/isitcredible/reviewer2), so upstream Apache-2.0 attribution and trademark notes are preserved in [NOTICE](NOTICE), with the upstream license text retained at [LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt).
 
 ## Status
 
