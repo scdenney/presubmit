@@ -1,6 +1,6 @@
 # presubmit
 
-**Adversarial peer review for academic PDFs, powered by Anthropic Claude.**
+**Claude-powered adversarial peer review for academic PDFs: red-team critique, claim verification, and structured review reports.**
 
 A derivative of [`reviewer2`](https://github.com/isitcredible/reviewer2) (Apache-2.0, © The Catalogue of Errors Ltd) with the LLM client layer rewritten to call Claude instead of Gemini. All prompts, pipeline structure, and non-LLM tooling (PDF merge, code ingestion, Mathpix math OCR) are ported largely verbatim from upstream; only the API client and model routing are new.
 

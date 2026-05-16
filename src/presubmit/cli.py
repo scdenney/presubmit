@@ -17,7 +17,7 @@ _SUPPORTED_INPUT_EXTS = (".pdf", ".md", ".markdown", ".txt", ".tex")
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="presubmit",
-        description="Adversarial peer review for academic papers, powered by Anthropic Claude.",
+        description="Claude-powered adversarial peer review for academic PDFs.",
     )
     parser.add_argument(
         "paper",

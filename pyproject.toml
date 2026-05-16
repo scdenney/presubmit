@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "presubmit"
 version = "0.1.0"
-description = "Adversarial peer-review pipeline for academic PDFs, powered by Anthropic Claude."
+description = "Claude-powered adversarial peer review for academic PDFs: red-team critique, claim verification, and structured review reports."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "CC-BY-4.0"}
