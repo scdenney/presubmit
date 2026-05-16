@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/social-preview.png" alt="presubmit: adversarial peer review for academic PDFs" width="100%">
-</p>
-
 # presubmit
 
 **Adversarial peer review for academic PDFs, powered by Anthropic Claude.**
