@@ -39,15 +39,15 @@ MODELS = {
     # Claude-native aliases
     "haiku": "claude-haiku-4-5",
     "sonnet": "claude-sonnet-4-6",
-    "opus": "claude-opus-4-7",
+    "opus": "claude-opus-4-8",
     # Upstream Gemini keys remapped so stages.py works unchanged
     "flash_lite": "claude-haiku-4-5",
     "flash_lite_3": "claude-haiku-4-5",
     "flash_2_5": "claude-sonnet-4-6",
     "flash_3": "claude-sonnet-4-6",
     "pro_2_5": "claude-sonnet-4-6",
-    "pro_3": "claude-opus-4-7",
-    "pro_3_1": "claude-opus-4-7",
+    "pro_3": "claude-opus-4-8",
+    "pro_3_1": "claude-opus-4-8",
 }
 
 # Anthropic API requires max_tokens. Default if caller does not pass one.
@@ -61,8 +61,8 @@ THINKING_LEVEL_TO_BUDGET = {"low": 2000, "medium": 5000, "high": 10000}
 # Models that require the new adaptive-thinking API
 # (`thinking.type=adaptive` + `output_config.effort=low|medium|high`)
 # instead of the legacy `{"type": "enabled", "budget_tokens": N}` format.
-# Opus 4.7 deprecated the legacy form.
-_ADAPTIVE_THINKING_MODELS = ("opus-4-7",)
+# Opus 4.7+ (including Opus 4.8) deprecated the legacy form.
+_ADAPTIVE_THINKING_MODELS = ("opus-4-7", "opus-4-8")
 
 
 def _budget_to_effort(budget: int) -> str:
@@ -196,7 +196,7 @@ def call_claude(
     # Two API shapes coexist:
     #   - legacy:   thinking={"type": "enabled", "budget_tokens": N}
     #   - adaptive: thinking={"type": "adaptive"}, output_config={"effort": "low|medium|high"}
-    # Opus 4.7 dropped legacy. We pick per-model.
+    # Opus 4.7+ (including Opus 4.8) dropped legacy. We pick per-model.
     use_adaptive = any(tag in model_name for tag in _ADAPTIVE_THINKING_MODELS)
     thinking_cfg = None
     output_config = None

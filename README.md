@@ -20,13 +20,13 @@ Output is one `report.txt` plus, optionally, an editor's note and copyediting su
 
 ## PDF handling and cost
 
-`presubmit` does **not** re-upload the source PDF to every Claude call. It would be a token muncher: an 80-page paper sent as PDF burns ~500K input tokens per stage (page rasters are ~1.6K tokens each), and across 30+ stages that runs ~$25–60 per paper on Opus 4.7. So the pipeline does not work that way.
+`presubmit` does **not** re-upload the source PDF to every Claude call. It would be a token muncher: an 80-page paper sent as PDF burns ~500K input tokens per stage (page rasters are ~1.6K tokens each), and across 30+ stages that runs ~$25–60 per paper on Opus 4.8. So the pipeline does not work that way.
 
 Instead, the pipeline converts the PDF to markdown **once** at start (using [`marker-pdf`](https://github.com/VikParuchuri/marker), which preserves table structure and figure captions) and routes ~25 of the ~30 stages to that markdown. The markdown is sent as a cache-controlled content block, so the second through Nth stages within Anthropic's 5-minute prompt-cache window pay roughly 10% of the first call's input cost.
 
 The 7 stages that genuinely need page rasters — the math chain (`01e`, `01e2`, `01fa`–`01fd`) and `09a_proofreader` (which checks layout) — keep using the PDF directly. Everything else reasons over the markdown.
 
-**Estimated cost on a typical 80-page paper, Opus 4.7:** ~$2–4 per full run with this routing. Without the PDF→markdown step, the same paper would cost ~$25–30.
+**Estimated cost on a typical 80-page paper, Opus 4.8:** ~$2–4 per full run with this routing. Without the PDF→markdown step, the same paper would cost ~$25–30.
 
 **Why `marker-pdf` is a hard dependency.** `marker-pdf` is what makes the converted markdown high-fidelity enough to substitute for the PDF on text-only stages. Plain `pypdf` text extraction loses table structure and figure captions, which materially weakens what the Butcher / Numbers / Reviewer stages can reason about on table-heavy papers. The pipeline therefore refuses to fall back to it; if marker fails to import or convert, the run halts with `PipelineError` rather than producing a degraded review silently. If you need to bypass marker (e.g., you already have the source as `.md` or `.tex`), pass that file directly — the CLI accepts any of `.pdf`, `.md`, `.markdown`, `.txt`, `.tex`.
 
@@ -161,7 +161,7 @@ Upstream assigns stages to specific Gemini model keys (`flash_lite`, `flash_2_5`
 | `flash_lite`   | `claude-haiku-4-5`   | Light validators, structure checks    |
 | `flash_2_5`    | `claude-sonnet-4-6`  | Mid-tier reasoning (Red Team support) |
 | `pro_2_5`      | `claude-sonnet-4-6`  | Red Team primary                      |
-| `pro_3_1`      | `claude-opus-4-7`    | Heavy reasoning, review synthesis     |
+| `pro_3_1`      | `claude-opus-4-8`    | Heavy reasoning, review synthesis     |
 
 This mapping is a starting point, not a calibrated equivalence. Claude Sonnet is plausibly a closer stand-in for Gemini Pro 2.5 than for Flash; Claude Opus is plausibly overkill for some Gemini Pro 3.1 stages. Treat it as a tunable dial in `src/presubmit/core.py`.
 
