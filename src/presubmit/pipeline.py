@@ -188,10 +188,17 @@ def _marker_convert(pdf_path: Path, md_path: Path) -> None:
             ".md / .markdown / .tex file as input to bypass marker."
         ) from e
     except Exception as e:
+        py314 = sys.version_info >= (3, 14)
+        hint = (
+            " PDF input is broken on Python 3.14 — pass a .md file instead, "
+            "or downgrade to Python 3.12/3.13. See README."
+        ) if py314 else (
+            " Pass a pre-converted .md file to bypass marker."
+        )
         raise PipelineError(
             f"marker-pdf failed converting {pdf_path}. "
             f"Latest error: {e}. "
-            f"Earlier (<=0.x API) error: {last_err}."
+            f"Earlier (<=0.x API) error: {last_err}.{hint}"
         ) from e
 
 

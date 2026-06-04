@@ -34,7 +34,7 @@ The 7 stages that genuinely need page rasters — the math chain (`01e`, `01e2`,
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.10+ (Python 3.14 users: PDF input is broken; see note below)
 - An Anthropic API key ([console.anthropic.com](https://console.anthropic.com/))
 - `marker-pdf` (installed automatically via `pip install -e .`; pulls in PyTorch and a few GB of ML models on first use — see "PDF handling and cost" above)
 - `qpdf` on `PATH` for PDF preprocessing (optional; python fallback exists)
@@ -52,6 +52,8 @@ pip install -e .
 ```
 
 Initial install takes 5–10 minutes because of `marker-pdf` and its PyTorch dependency. The first PDF conversion downloads model weights (~3–5 GB) the first time.
+
+> **Python 3.14: PDF input is broken; `.md` / `.tex` input works fine.** `marker-pdf` depends on `surya-ocr` 0.12.x, which was built against `transformers` 4.43.x. On Python 3.14, `tokenizers` 0.20.x (required to downgrade transformers) cannot be compiled from source because `pyo3` 0.22.5 only supports up to Python 3.13. The `transformers` version that installs in a Python 3.14 venv (4.57+) has breaking changes for surya's composition config classes, causing `KeyError: 'encoder'` and subsequent errors during PDF conversion. Workaround: convert your PDF to markdown first (e.g. with `pymupdf4llm`) and pass the `.md` file — the pipeline accepts `.md` / `.markdown` / `.txt` / `.tex` directly and skips marker entirely. To use PDF input, run on Python 3.12 or 3.13.
 
 ## API key setup
 
