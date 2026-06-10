@@ -50,6 +50,7 @@ src/presubmit/
 ## Environment variables
 
 - `ANTHROPIC_API_KEY` — required.
+- `PRESUBMIT_OUTPUT_BASE` — default output base; without `--work-dir`, runs land in `<base>/<slug>/presubmit_run/` (the recommended setup per the README).
 - `CLAUDE_MODEL_OVERRIDE` — force every stage to a single model key (for smoke runs).
 - `PRESUBMIT_PROMPTS_DIR` — override the packaged prompts directory.
 - `PRESUBMIT_PRICING_CSV` — override the packaged pricing CSV.

@@ -236,6 +236,7 @@ def call_claude(
     base_delay = 5
     max_delay = 300
     has_forced_reupload = False
+    upload_failures = 0
 
     # Decide how to deliver the source document. The leading position in the
     # content array is the cacheable slot — for markdown, we mark it with
@@ -263,7 +264,14 @@ def call_claude(
                     {"type": "document", "source": {"type": "file", "file_id": file_id}}
                 )
             except Exception as e:
-                print(f"    ⚠  Upload failed inside retry loop: {e}")
+                upload_failures += 1
+                print(f"    ⚠  Upload failed inside retry loop ({upload_failures}/{max_retries}): {e}")
+                if upload_failures >= max_retries:
+                    # A missing/oversized/corrupt file never recovers; without
+                    # this cap the loop spins forever at 5s intervals.
+                    raise RuntimeError(
+                        f"PDF upload failed {upload_failures} times for '{pdf_file_path}': {e}"
+                    ) from e
                 time.sleep(5)
                 continue
         elif pdf_file_path:

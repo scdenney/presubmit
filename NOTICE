@@ -32,11 +32,11 @@ Their licenses apply to their respective source code and are not altered by
 this project's CC BY 4.0 license.
 
   anthropic              Apache-2.0
+  marker-pdf             GPL-3.0
   pypdf                  BSD-3-Clause
   reportlab              BSD
   requests               Apache-2.0
 
-Optional external binaries (not bundled, detected at runtime):
+Optional external binaries (not bundled, invoked when present on PATH):
 
-  qpdf                   Apache-2.0
   ghostscript (gs)       AGPL-3.0

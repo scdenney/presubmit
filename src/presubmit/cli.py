@@ -219,8 +219,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    # Remember the original input: the slug (and thus the work dir under
+    # PRESUBMIT_OUTPUT_BASE) must derive from the paper's name, not from the
+    # random pandoc temp file — otherwise .tex runs never resume.
+    source_path = paper_path
+    tex_tmp_md: Path | None = None
     if ext == ".tex":
         paper_path = _convert_tex_to_md(paper_path)
+        tex_tmp_md = paper_path
         ext = ".md"
 
     _require_env("ANTHROPIC_API_KEY", "for the Anthropic API")
@@ -238,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
     output_path = Path(args.output).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    work_dir, cleanup_work_dir = _resolve_work_dir(args, paper_path)
+    work_dir, cleanup_work_dir = _resolve_work_dir(args, source_path)
 
     # Defer import to keep --help fast and avoid pulling in genai unnecessarily.
     from presubmit.pipeline import PipelineError, run
@@ -264,10 +270,17 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\naborted by user", file=sys.stderr)
         return 130
+    finally:
+        if tex_tmp_md is not None:
+            tex_tmp_md.unlink(missing_ok=True)
 
     if final_txt and Path(final_txt).is_file():
         shutil.copy2(final_txt, output_path)
         print(f"\n✓ Report written to {output_path}")
+    elif args.stop_stage < 100.0:
+        # Intentional early stop (smoke runs etc.): no consolidated report by
+        # design, so this is success, not failure.
+        print(f"\n✓ Stopped at stage {args.stop_stage} as requested; stage outputs in {work_dir}")
     else:
         print(f"\nerror: pipeline did not produce a final report (stopped at {final_txt})", file=sys.stderr)
         return 1

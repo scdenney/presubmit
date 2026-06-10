@@ -37,7 +37,7 @@ The 7 stages that genuinely need page rasters — the math chain (`01e`, `01e2`,
 - Python 3.10+
 - An Anthropic API key ([console.anthropic.com](https://console.anthropic.com/))
 - `marker-pdf` (installed automatically via `pip install -e .`; pulls in PyTorch and a few GB of ML models on first use — see "PDF handling and cost" above)
-- `qpdf` on `PATH` for PDF preprocessing (optional; python fallback exists)
+- `ghostscript` (`gs`) on `PATH` for PDF preprocessing (optional; pypdf fallback exists)
 - (Optional) A Mathpix account for the math-audit add-on
 
 ## Install
@@ -141,14 +141,18 @@ Upstream stage `00a_metadata` uses Gemini's `GoogleSearch` tool to look up the p
 
 ### 3. Extended thinking semantics
 
-Gemini's `ThinkingConfig` takes either a `thinking_budget` (integer token count, or `-1` for "unbounded") or a `thinking_level` ("low" / "medium" / "high"). Claude's extended thinking takes `budget_tokens` only.
+Gemini's `ThinkingConfig` takes either a `thinking_budget` (integer token count, or `-1` for "unbounded") or a `thinking_level` ("low" / "medium" / "high"). Claude has two thinking APIs, and the port picks per model (`_ADAPTIVE_THINKING_MODELS` in `core.py`):
 
-The port translates:
+**Adaptive path** — Opus 4.7/4.8 (the `pro_3`/`pro_3_1` tier, used by the heavy stages). Legacy `budget_tokens` was removed on these models, so the port sends `thinking={"type": "adaptive"}` with `output_config={"effort": ...}`:
+- `thinking_level="low" / "medium" / "high"` → `effort="low" / "medium" / "high"`
+- `thinking_budget=N` → effort bucketed from the budget (`<3000` → low, `<8000` → medium, else high); `-1` → high
+
+**Legacy path** — Sonnet / Haiku tiers:
 - `thinking_budget=N` → `{"type": "enabled", "budget_tokens": N}` if `N >= 1024`, else disabled
 - `thinking_budget=-1` → `budget_tokens=12000` (approximate "unbounded")
 - `thinking_level="low" / "medium" / "high"` → `budget_tokens=2000 / 5000 / 10000`
 
-The `high` setting is deliberately conservative — Claude's thinking tokens are priced per-token output, so ramping higher than 10k on 30+ stages adds up fast. If you find specific stages under-thinking, bump the `THINKING_LEVEL_TO_BUDGET` map in `core.py`.
+The `high` budget is deliberately conservative — Claude's thinking tokens are priced per-token output, so ramping higher than 10k on 30+ stages adds up fast. If you find specific stages under-thinking, bump the `THINKING_LEVEL_TO_BUDGET` map (legacy) or `_budget_to_effort` thresholds (adaptive) in `core.py`.
 
 Also: Claude's extended thinking **requires `temperature=1`**. The port overrides any caller-supplied temperature when thinking is enabled. Stages that rely on `temperature=0.0` for determinism will get `temperature=1.0` silently whenever they also use thinking. In practice this has minimal impact on output consistency for the review task.
 
@@ -161,19 +165,20 @@ Upstream assigns stages to specific Gemini model keys (`flash_lite`, `flash_2_5`
 | `flash_lite`   | `claude-haiku-4-5`   | Light validators, structure checks    |
 | `flash_2_5`    | `claude-sonnet-4-6`  | Mid-tier reasoning (Red Team support) |
 | `pro_2_5`      | `claude-sonnet-4-6`  | Red Team primary                      |
+| `pro_3`        | `claude-opus-4-8`    | Heavy reasoning                       |
 | `pro_3_1`      | `claude-opus-4-8`    | Heavy reasoning, review synthesis     |
 
 This mapping is a starting point, not a calibrated equivalence. Claude Sonnet is plausibly a closer stand-in for Gemini Pro 2.5 than for Flash; Claude Opus is plausibly overkill for some Gemini Pro 3.1 stages. Treat it as a tunable dial in `src/presubmit/core.py`.
 
 ## Cost tracking
 
-Upstream ships a `pricing.csv` keyed by Gemini model names. **This port has not updated that file for Claude pricing.** The `calculate_cost()` helper will therefore report `MISSING` for every stage until you populate `src/presubmit/data/pricing.csv` with Claude per-million-token rates. This is a known TODO — costs are still tracked by the API dashboard; only the end-of-run report is affected.
+`src/presubmit/data/pricing.csv` carries per-million-token rates for the Claude models the port uses (Haiku 4.5, Sonnet 4.6, Opus 4.8 — current as of 2026-06), so the end-of-run `calculate_cost()` report prints real dollar totals. The upstream Gemini rows are retained for reference. If Anthropic's pricing changes or you remap model tiers, update the CSV; the authoritative spend record is always the Anthropic console.
 
 ## What's the same as upstream
 
-- All 46 stage prompts (except the persona name change "Reviewer 2" → "Critical Reviewer" per the upstream trademark NOTICE).
+- All 42 stage prompts, plus the three persona system-instruction files (except the persona name change "Reviewer 2" → "Critical Reviewer" per the upstream trademark NOTICE).
 - Pipeline sequencing, checkpoint resumability, work-dir layout.
-- PDF preprocessing (qpdf + pypdf fallback), supplement merging, code-zip ingestion.
+- PDF preprocessing (ghostscript + pypdf fallback), supplement merging, code-zip ingestion.
 - Mathpix math-OCR integration (opt-in).
 - Output formats: plain-text report, optional editor's note, optional copyediting suggestions.
 - Report rendering (`render_text.py`).

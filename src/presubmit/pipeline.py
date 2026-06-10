@@ -487,6 +487,11 @@ def _run_inner(
     if metadata_json.exists():
         metadata = json.loads(metadata_json.read_text(encoding="utf-8"))
 
+    # stages.stage_07_formatter keys its code-citation rules off this field;
+    # it is runtime state, not extracted metadata, so set it every run.
+    if do_code and code_dir:
+        metadata["code_dir"] = str(code_dir)
+
     if start_stage <= 0.9 and stop_stage >= 0.9:
         _run_stage_with_retry(
             lambda: stages.stage_00c_contributions(str(markdown_file), metadata, str(work_dir)),
@@ -592,7 +597,10 @@ def _run_inner(
             if start_stage <= 1.35 and stop_stage >= 1.35:
                 s01e2 = _run_stage_with_retry(
                     lambda: stages.stage_01e2_equation_extraction(str(vision_source), metadata, str(work_dir)),
-                    "01e2_equation_extraction", max_retries, work_dir=work_dir,
+                    # step name must match the file the stage saves, or the
+                    # resume cache misses and every resumed --math run re-bills
+                    # Mathpix and the extraction call.
+                    "01e2_equations", max_retries, work_dir=work_dir,
                 )
             else:
                 s01e2 = _load_output(work_dir, "01e2_equations.txt")
@@ -809,7 +817,9 @@ def _run_inner(
         if stop_stage < 8.0:
             print("  🛑 Reached Stop Stage (Pre-Writer Mode).")
             return _finalize_no_render(work_dir)
-        _run_writer_mode(str(target_file), str(markdown_file), final_body, metadata, work_dir, start_stage, stop_stage, max_retries)
+        # vision_source, not target_file: for markdown/.txt/.tex input there is
+        # no PDF, and str(None) would send 09a a file literally named "None".
+        _run_writer_mode(str(vision_source), str(markdown_file), final_body, metadata, work_dir, start_stage, stop_stage, max_retries)
 
     # ====================================================================
     # PYTHON TEXT RENDER (replaces the three R renderers)
