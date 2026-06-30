@@ -8,7 +8,7 @@ Nothing blocking — the port compiles and all cross-references resolve. When re
    - `FATAL: Claude refused` — a Red Team prompt tripped Claude safety. Note which stage (the error message includes it); softening will be needed in `src/presubmit/prompts/01*.txt` or `02*.txt` most likely. The task is critical peer review, not personal attack; rewording usually clears refusals.
    - Wall time and whether thinking budgets feel proportionate. Upstream's Gemini `thinking_budget=-1` mapped to `budget_tokens=12000` on Claude; high-reasoning stages (01a Breaker, 02e Assessment, 04a Reviewer) may want more.
    - Model tier mapping quality. `MODELS` in `core.py` aliases Gemini keys → Claude; if Sonnet feels weak for Red Team stages, promote to Opus.
-2. **Populate `src/presubmit/data/pricing.csv`** with Claude per-M-token rates (input, output, thinking). Until then, `calculate_cost()` reports `MISSING` and end-of-run cost summaries are empty.
+2. ~~**Populate `src/presubmit/data/pricing.csv`** with Claude per-M-token rates.~~ Done — current Haiku 4.5 / Sonnet 4.6 / Opus 4.8 rates are in the CSV and `calculate_cost()` resolves them.
 3. **Decide the `use_search` path.** Options: (a) wire Tavily/SerpAPI into `call_claude` when `use_search=True`, (b) require a Claude Code session and use its `WebSearch` tool, (c) accept degraded stage-00a metadata on published manuscripts and move on. Affects stages that try to resolve citations against the live web.
 4. **Add a minimal smoke test.** One pytest that constructs a `call_claude` request with a 1-page throwaway PDF and asserts the response structure. Catches SDK-API-shape regressions.
 
@@ -24,9 +24,10 @@ Things that do **not** need work: commits, push, cross-refs, sync with the sibli
 - **LICENSE + NOTICE are load-bearing.** The repo is distributed under CC BY 4.0, but Apache-2.0 still requires preserving upstream attribution for `reviewer2`-derived material. Keep `NOTICE` and `LICENSES/Apache-2.0.txt` in sync. Upstream's NOTICE blocks use of their trademarks ("Reviewer 2", "isitcredible"); we comply by using the name `presubmit` and renaming the persona "Reviewer 2" → "Critical Reviewer" in all prompt files. Do NOT restore the upstream names.
 - **`call_gemini` is an alias for `call_claude`.** This exists so the 40+ stage functions in `stages.py` don't need to change. Don't rename either function.
 - **Models are aliased in `core.py::MODELS`.** Upstream stage code references `flash_lite`, `pro_2_5`, etc.; the map translates those to `claude-haiku-4-5` / `claude-sonnet-4-6` / `claude-opus-4-8`. If upstream adds new model keys, add them there.
+- **Thinking + temperature are routed per model class in `core.py`.** Two lists drive it. `_ADAPTIVE_THINKING_MODELS` (Opus 4.6/4.7/4.8, Sonnet 4.6, Fable 5) use `thinking={"type":"adaptive"}` + `output_config={"effort": ...}`; everything else (Haiku 4.5 and older) uses legacy `{"type":"enabled","budget_tokens":N}`. `_NO_SAMPLING_PARAMS_MODELS` (Opus 4.7/4.8, Fable 5) reject `temperature` with a 400, so `call_claude` omits it entirely for those — including the temperature=1 that legacy thinking would otherwise require. When adding a new model alias, slot it into the right list(s) or Opus calls will 400 and Sonnet calls will fall back to the deprecated budget path.
 - **Red Team prompts may hit safety refusals.** Claude has no `BLOCK_NONE` override like Gemini. When porting new upstream prompts or writing new ones, prefer attacking the *manuscript's claims* over *the authors' character*. If `stop_reason=="refusal"` keeps firing, soften rhetoric rather than escalating.
 - **Grounded search is a no-op.** The `use_search=True` kwarg is accepted but ignored with a warning. If this becomes important, wire Tavily or SerpAPI into `call_claude` or plumb a Claude Code `WebSearch` tool through.
-- **Pricing CSV is stale.** `src/presubmit/data/pricing.csv` still has Gemini rates. `calculate_cost()` will emit `MISSING` for Claude models until this is updated.
+- **Pricing CSV is populated.** `src/presubmit/data/pricing.csv` carries current Claude per-MTok rates (Haiku 4.5 $1/$5, Sonnet 4.6 $3/$15, Opus 4.8 $5/$25); `calculate_cost()` resolves them. Refresh if Anthropic changes pricing or the `MODELS` map adds a new model.
 
 ## Architecture recap
 
@@ -44,7 +45,7 @@ src/presubmit/
 ├── mathpix.py          # optional Mathpix math-OCR client
 ├── paths.py            # prompts/pricing path resolution + env overrides
 ├── prompts/            # 46 stage prompt .txt files + resources/
-└── data/pricing.csv    # per-model pricing (STALE — Gemini rates)
+└── data/pricing.csv    # per-model pricing (current Claude per-MTok rates)
 ```
 
 ## Environment variables

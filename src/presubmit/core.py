@@ -55,14 +55,23 @@ DEFAULT_MAX_TOKENS = 16000
 
 # Gemini `thinking_level` → Claude extended-thinking budget_tokens.
 # Used only on models that still accept the legacy `{"type": "enabled",
-# "budget_tokens": N}` thinking config (Sonnet 4.6, Haiku 4.5, etc.).
+# "budget_tokens": N}` thinking config (Haiku 4.5 and older). The 4.6+ models
+# in _ADAPTIVE_THINKING_MODELS take the adaptive path instead.
 THINKING_LEVEL_TO_BUDGET = {"low": 2000, "medium": 5000, "high": 10000}
 
-# Models that require the new adaptive-thinking API
+# Models that take the adaptive-thinking API
 # (`thinking.type=adaptive` + `output_config.effort=low|medium|high`)
 # instead of the legacy `{"type": "enabled", "budget_tokens": N}` format.
-# Opus 4.7+ (including Opus 4.8) deprecated the legacy form.
-_ADAPTIVE_THINKING_MODELS = ("opus-4-7", "opus-4-8")
+# Adaptive is required on Opus 4.7/4.8 and Fable 5 (the legacy form 400s) and is
+# the recommended path on Opus 4.6 and Sonnet 4.6 (legacy `budget_tokens` is
+# deprecated there). `effort` is supported on all of these but errors on
+# Haiku 4.5, which therefore stays on the legacy budget_tokens path.
+_ADAPTIVE_THINKING_MODELS = ("opus-4-6", "opus-4-7", "opus-4-8", "sonnet-4-6", "fable-5")
+
+# Models that reject sampling parameters (`temperature`/`top_p`/`top_k` → 400).
+# Opus 4.7 removed them; Opus 4.8 and Fable 5 inherit that. Sonnet 4.6, Opus 4.6,
+# Haiku 4.5, and older still accept `temperature`.
+_NO_SAMPLING_PARAMS_MODELS = ("opus-4-7", "opus-4-8", "fable-5")
 
 
 def _budget_to_effort(budget: int) -> str:
@@ -198,6 +207,7 @@ def call_claude(
     #   - adaptive: thinking={"type": "adaptive"}, output_config={"effort": "low|medium|high"}
     # Opus 4.7+ (including Opus 4.8) dropped legacy. We pick per-model.
     use_adaptive = any(tag in model_name for tag in _ADAPTIVE_THINKING_MODELS)
+    rejects_sampling = any(tag in model_name for tag in _NO_SAMPLING_PARAMS_MODELS)
     thinking_cfg = None
     output_config = None
 
@@ -292,7 +302,6 @@ def call_claude(
         kwargs = {
             "model": model_name,
             "max_tokens": max_tok,
-            "temperature": temperature,
             "messages": messages,
         }
         if system_instruction:
@@ -301,8 +310,14 @@ def call_claude(
             kwargs["thinking"] = thinking_cfg
             if output_config:
                 kwargs["output_config"] = output_config
-            # Both legacy and adaptive thinking on Claude require temperature=1.
-            kwargs["temperature"] = 1.0
+            # Legacy extended thinking (`type: enabled`) requires temperature=1;
+            # adaptive thinking does not. Models that reject sampling params
+            # (Opus 4.7/4.8, Fable 5) 400 on any temperature, including =1 — so
+            # only set it on the legacy path for models that still accept it.
+            if thinking_cfg.get("type") == "enabled" and not rejects_sampling:
+                kwargs["temperature"] = 1.0
+        elif not rejects_sampling:
+            kwargs["temperature"] = temperature
 
         try:
             # Files API beta header is only needed when actually uploading a
