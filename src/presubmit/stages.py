@@ -43,7 +43,7 @@ def stage_00a_metadata(pdf_path, output_dir):
     result = call_gemini(
         prompt,
         pdf_path,
-        model_type="flash_2_5",
+        model_type="mechanical",
         temperature=0.0,
         thinking_budget=0,
         system_instruction=load_instruction("bureaucrat.txt"),
@@ -56,7 +56,7 @@ def stage_00a_metadata(pdf_path, output_dir):
 def stage_00b_metadata_clean(raw, pdf_path, output_dir):
     print("  → 00b Metadata Clean...")
     prompt = load_prompt("prompts/00b_metadata_clean.txt").replace("{{RAW_INPUT}}", raw)
-    result = call_gemini(prompt, pdf_path, model_type="flash_2_5", temperature=0.0, thinking_budget=200, system_instruction=load_instruction("bureaucrat.txt"), step="00b_metadata_clean")
+    result = call_gemini(prompt, pdf_path, model_type="mechanical", temperature=0.0, thinking_budget=200, system_instruction=load_instruction("bureaucrat.txt"), step="00b_metadata_clean")
     save_output(result, "00b_metadata_clean.txt", output_dir)
     return extract_info_fields(result)
 
@@ -79,7 +79,7 @@ def stage_00b_2_metadata_math(metadata, output_dir):
         f"Input JSON:\n{json_input}"
     )
 
-    result = call_gemini(prompt, None, model_type="flash_2_5", temperature=0.0, thinking_budget=100, step="00b_2_metadata_math")
+    result = call_gemini(prompt, None, model_type="mechanical", temperature=0.0, thinking_budget=100, step="00b_2_metadata_math")
 
     try:
         clean_result = result.replace("```json", "").replace("```", "").strip()
@@ -97,7 +97,7 @@ def stage_00c_contributions(pdf_path, metadata, output_dir):
     print("  → 00c Contributions...")
     prompt = load_prompt("prompts/00c_contributions.txt").replace("{{CITATION}}", get_citation_block(metadata))
     prompt = inject_page_numbers(prompt, metadata)
-    result = call_gemini(prompt, pdf_path, model_type="flash_2_5", temperature=0.0, thinking_budget=1000, system_instruction=load_instruction("bureaucrat.txt"), step="00c_contributions")
+    result = call_gemini(prompt, pdf_path, model_type="forensic", temperature=0.0, thinking_budget=1000, system_instruction=load_instruction("bureaucrat.txt"), step="00c_contributions")
     save_output(result, "00c_contributions.txt", output_dir)
     return result
 
@@ -111,7 +111,7 @@ def stage_01a_breaker(pdf_path, metadata, output_dir, contribs, appendix_text=No
     if appendix_text:
         prompt += APPENDIX_INJECTION.replace("{{APPENDIX_CONTENT}}", appendix_text)
     prompt = inject_page_numbers(prompt, metadata)
-    result = call_gemini(prompt, pdf_path, model_type="pro_2_5", temperature=0.2, thinking_budget=-1, system_instruction=load_instruction("researcher.txt"), step="01a_breaker")
+    result = call_gemini(prompt, pdf_path, model_type="adversarial", temperature=0.2, thinking_budget=-1, system_instruction=load_instruction("researcher.txt"), step="01a_breaker")
     save_output(result, "01a_breaker.txt", output_dir)
     return result
 
@@ -144,7 +144,7 @@ def stage_01a_2_breaker_revisit(pdf_path, round_1_output, metadata, output_dir):
     result = call_gemini(
         full_prompt,
         pdf_path,
-        model_type="pro_3_1",
+        model_type="adversarial",
         temperature=0.6,
         thinking_level="high",
         system_instruction=load_instruction("researcher.txt"),
@@ -160,7 +160,7 @@ def stage_01b_butcher(pdf_path, metadata, output_dir, contribs, appendix_text=No
     if appendix_text:
         prompt += APPENDIX_INJECTION.replace("{{APPENDIX_CONTENT}}", appendix_text)
     prompt = inject_page_numbers(prompt, metadata)
-    result = call_gemini(prompt, pdf_path, model_type="pro_2_5", temperature=0.2, thinking_budget=-1, system_instruction=load_instruction("researcher.txt"), step="01b_butcher")
+    result = call_gemini(prompt, pdf_path, model_type="adversarial", temperature=0.2, thinking_budget=-1, system_instruction=load_instruction("researcher.txt"), step="01b_butcher")
     save_output(result, "01b_butcher.txt", output_dir)
     return result
 
@@ -170,7 +170,7 @@ def stage_01c_shredder(pdf_path, metadata, output_dir, contribs, appendix_text=N
     if appendix_text:
         prompt += APPENDIX_INJECTION.replace("{{APPENDIX_CONTENT}}", appendix_text)
     prompt = inject_page_numbers(prompt, metadata)
-    result = call_gemini(prompt, pdf_path, model_type="pro_2_5", temperature=0.1, thinking_budget=-1, system_instruction=load_instruction("researcher.txt"), step="01c_shredder")
+    result = call_gemini(prompt, pdf_path, model_type="forensic", temperature=0.1, thinking_budget=-1, system_instruction=load_instruction("researcher.txt"), step="01c_shredder")
     save_output(result, "01c_shredder.txt", output_dir)
     return result
 
@@ -181,7 +181,7 @@ def stage_01d_collector(pdf_path, b1, s1, metadata, output_dir, appendix_text=No
     if appendix_text:
         prompt += APPENDIX_INJECTION.replace("{{APPENDIX_CONTENT}}", appendix_text)
     prompt = inject_page_numbers(prompt, metadata)
-    result = call_gemini(prompt, pdf_path, model_type="flash_2_5", temperature=0.0, thinking_budget=-1, system_instruction=load_instruction("researcher.txt"), step="01d_collector")
+    result = call_gemini(prompt, pdf_path, model_type="forensic", temperature=0.0, thinking_budget=-1, system_instruction=load_instruction("researcher.txt"), step="01d_collector")
     save_output(result, "01d_collector.txt", output_dir)
     return result
 
@@ -191,7 +191,7 @@ def stage_01e_math_extract(pdf_path, contribs, metadata, output_dir, appendix_te
     if appendix_text:
         prompt += APPENDIX_INJECTION.replace("{{APPENDIX_CONTENT}}", appendix_text)
     prompt = inject_page_numbers(prompt, metadata)
-    result = call_gemini(prompt, pdf_path, model_type="flash_2_5", temperature=0.0, thinking_budget=-1, system_instruction=load_instruction("bureaucrat.txt"), step="01e_math")
+    result = call_gemini(prompt, pdf_path, model_type="forensic", temperature=0.0, thinking_budget=-1, system_instruction=load_instruction("bureaucrat.txt"), step="01e_math")
     save_output(result, "01e_math.txt", output_dir)
     return result
 
@@ -252,7 +252,7 @@ def stage_01e2_equation_extraction(pdf_path, metadata, output_dir):
     )
     equations = call_gemini(
         extract_prompt, None,
-        model_type="flash_2_5", temperature=0.0, thinking_budget=-1,
+        model_type="mechanical", temperature=0.0, thinking_budget=-1,
         system_instruction="You are a precise equation extractor.",
         step="01e2_extract",
     )
@@ -268,7 +268,7 @@ def stage_01fa_math_check(pdf_path, contribs, metadata, output_dir, appendix_tex
         prompt += APPENDIX_INJECTION.replace("{{APPENDIX_CONTENT}}", appendix_text)
     prompt = inject_page_numbers(prompt, metadata)
     prompt = _inject_equations(prompt, equations)
-    result = call_gemini(prompt, pdf_path, model_type="pro_3_1", temperature=0.1, thinking_level="high", system_instruction=load_instruction("researcher.txt"), step="01fa_math_check")
+    result = call_gemini(prompt, pdf_path, model_type="adversarial", temperature=0.1, thinking_level="high", system_instruction=load_instruction("researcher.txt"), step="01fa_math_check")
     save_output(result, "01fa_math_check.txt", output_dir)
     return result
 
@@ -279,7 +279,7 @@ def stage_01fb_math_proofread(pdf_path, contribs, metadata, output_dir, appendix
         prompt += APPENDIX_INJECTION.replace("{{APPENDIX_CONTENT}}", appendix_text)
     prompt = inject_page_numbers(prompt, metadata)
     prompt = _inject_equations(prompt, equations)
-    result = call_gemini(prompt, pdf_path, model_type="pro_3_1", temperature=0.1, thinking_level="high", system_instruction=load_instruction("researcher.txt"), step="01fb_math_proofread")
+    result = call_gemini(prompt, pdf_path, model_type="adversarial", temperature=0.1, thinking_level="high", system_instruction=load_instruction("researcher.txt"), step="01fb_math_proofread")
     save_output(result, "01fb_math_proofread.txt", output_dir)
     return result
 
@@ -290,7 +290,7 @@ def stage_01fc_math_audit(pdf_path, proofreader_output, contribs, metadata, outp
         prompt += APPENDIX_INJECTION.replace("{{APPENDIX_CONTENT}}", appendix_text)
     prompt = inject_page_numbers(prompt, metadata)
     prompt = _inject_equations(prompt, equations)
-    result = call_gemini(prompt, pdf_path, model_type="pro_3_1", temperature=0.1, thinking_level="high", system_instruction=load_instruction("researcher.txt"), step="01fc_math_audit")
+    result = call_gemini(prompt, pdf_path, model_type="adversarial", temperature=0.1, thinking_level="high", system_instruction=load_instruction("researcher.txt"), step="01fc_math_audit")
     save_output(result, "01fc_math_audit.txt", output_dir)
     return result
 
@@ -314,7 +314,7 @@ def stage_01fd_math_sober(pdf_path, rederiver_output, proofreader_output, audito
     prompt = _inject_equations(prompt, equations)
     if mathpix_raw:
         prompt += MATHPIX_PAPER_INJECTION.replace("{{MATHPIX_RAW}}", mathpix_raw)
-    result = call_gemini(prompt, None if mathpix_raw else pdf_path, model_type="pro_3_1", temperature=0.1, thinking_level="high", system_instruction=load_instruction("researcher.txt"), step="01fd_math_sober")
+    result = call_gemini(prompt, None if mathpix_raw else pdf_path, model_type="synthesis", temperature=0.1, thinking_level="high", system_instruction=load_instruction("researcher.txt"), step="01fd_math_sober")
     save_output(result, "01fd_math_sober.txt", output_dir)
     return result
 
@@ -324,7 +324,7 @@ def stage_01g_the_void(pdf_path, contribs, metadata, output_dir, appendix_text=N
     if appendix_text:
         prompt += APPENDIX_INJECTION.replace("{{APPENDIX_CONTENT}}", appendix_text)
     prompt = inject_page_numbers(prompt, metadata)
-    result = call_gemini(prompt, pdf_path, model_type="pro_2_5", temperature=0.3, thinking_budget=-1, system_instruction=load_instruction("researcher.txt"), step="01g_the_void")
+    result = call_gemini(prompt, pdf_path, model_type="adversarial", temperature=0.3, thinking_budget=-1, system_instruction=load_instruction("researcher.txt"), step="01g_the_void")
     save_output(result, "01g_the_void.txt", output_dir)
     return result
 
@@ -462,7 +462,7 @@ def stage_01_code_gonzo(combined_pdf, metadata, output_dir):
     print("  → 01_code_c Divergence Hunter...")
     prompt = load_prompt("prompts/01i_code_gonzo.txt").replace("{{CITATION}}", get_citation_block(metadata))
     prompt = inject_page_numbers(prompt, metadata, is_code_stage=True)
-    result = call_gemini(prompt, combined_pdf, model_type="pro_3_1", temperature=0.5,
+    result = call_gemini(prompt, combined_pdf, model_type="adversarial", temperature=0.5,
                          thinking_level="high", system_instruction=load_instruction("researcher.txt"),
                          step="01i_code_gonzo")
     save_output(result, "01i_code_gonzo.txt", output_dir)
@@ -474,7 +474,7 @@ def stage_01_code_gonzo_b(combined_pdf, metadata, output_dir):
     print("  → 01_code_c2 Bug Hunter...")
     prompt = load_prompt("prompts/01j_code_gonzo_b.txt").replace("{{CITATION}}", get_citation_block(metadata))
     prompt = inject_page_numbers(prompt, metadata, is_code_stage=True)
-    result = call_gemini(prompt, combined_pdf, model_type="pro_3_1", temperature=0.5,
+    result = call_gemini(prompt, combined_pdf, model_type="adversarial", temperature=0.5,
                          thinking_level="high", system_instruction=load_instruction("researcher.txt"),
                          step="01j_code_gonzo_b")
     save_output(result, "01j_code_gonzo_b.txt", output_dir)
@@ -486,7 +486,7 @@ def stage_01_code_gonzo_c(combined_pdf, metadata, output_dir):
     print("  → 01_code_c3 Data Archaeologist...")
     prompt = load_prompt("prompts/01k_code_gonzo_c.txt").replace("{{CITATION}}", get_citation_block(metadata))
     prompt = inject_page_numbers(prompt, metadata, is_code_stage=True)
-    result = call_gemini(prompt, combined_pdf, model_type="pro_3_1", temperature=0.5,
+    result = call_gemini(prompt, combined_pdf, model_type="adversarial", temperature=0.5,
                          thinking_level="high", system_instruction=load_instruction("researcher.txt"),
                          step="01k_code_gonzo_c")
     save_output(result, "01k_code_gonzo_c.txt", output_dir)
@@ -512,7 +512,7 @@ def stage_01_code_compiler(g1, g2, g3, metadata, output_dir):
     prompt = prompt.replace("{{GONZO_3}}", g3 or "None")
     prompt = inject_page_numbers(prompt, metadata, is_code_stage=True)
 
-    result = call_gemini(prompt, None, model_type="flash_2_5", temperature=0.0, thinking_budget=-1,
+    result = call_gemini(prompt, None, model_type="mechanical", temperature=0.0, thinking_budget=-1,
                          system_instruction=load_instruction("bureaucrat.txt"), step="01l_code_compiler")
     save_output(result, "01l_code_compiler.txt", output_dir)
     return result
@@ -533,7 +533,7 @@ def stage_01_code_checker(consolidated, metadata, output_dir, code_pdf):
     prompt = prompt.replace("{{CITATION}}", get_citation_block(metadata))
     prompt = prompt.replace("{{CONSOLIDATED_ISSUES}}", consolidated)
     prompt = inject_page_numbers(prompt, metadata, is_code_stage=True)
-    result = call_gemini(prompt, code_pdf, model_type="pro_2_5", temperature=0.1, thinking_budget=1000,
+    result = call_gemini(prompt, code_pdf, model_type="forensic", temperature=0.1, thinking_budget=1000,
                          system_instruction=load_instruction("bureaucrat.txt"), step="01m_code_checker")
     save_output(result, "01m_code_checker.txt", output_dir)
     return result
@@ -555,7 +555,7 @@ def stage_01_code_list(consolidated, checker_output, metadata, output_dir):
     prompt = prompt.replace("{{CONSOLIDATED_ISSUES}}", consolidated)
     prompt = prompt.replace("{{CHECKER_OUTPUT}}", checker_output or "No checker output available.")
     prompt = inject_page_numbers(prompt, metadata, is_code_stage=True)
-    result = call_gemini(prompt, None, model_type="pro_3_1", temperature=0.5, thinking_level="low",
+    result = call_gemini(prompt, None, model_type="forensic", temperature=0.5, thinking_level="low",
                          system_instruction=load_instruction("thinker.txt"), step="01n_code_list")
     save_output(result, "01n_code_list.txt", output_dir)
     return result
@@ -568,7 +568,7 @@ def stage_04b_data_editor(findings, metadata, output_dir, paper_review_context=N
     else:
         prompt = prompt.replace("{{PAPER_REVIEW_CONTEXT}}", "None provided.")
     prompt = inject_page_numbers(prompt, metadata, is_code_stage=True)
-    result = call_gemini(prompt, None, model_type="pro_3_1", temperature=0.5, thinking_level="low", system_instruction=load_instruction("thinker.txt"), step="04b_data_editor")
+    result = call_gemini(prompt, None, model_type="adversarial", temperature=0.5, thinking_level="low", system_instruction=load_instruction("thinker.txt"), step="04b_data_editor")
     save_output(result, "04b_data_editor.txt", output_dir)
     return result
 
@@ -583,7 +583,7 @@ def stage_01o_summarizer(br1, bu1, sh1, col, alg, math, void, contribs, metadata
     if math_analysis:
         context += f"\n\nVERIFIED_MATH_ANALYSIS:\n{math_analysis}"
     prompt = load_prompt("prompts/01o_summarizer.txt").replace("{{INPUT_EVIDENCE}}", context).replace("{{CONTRIBUTIONS}}", contribs).replace("{{CITATION}}", get_citation_block(metadata))
-    result = call_gemini(prompt, None, model_type="pro_3_1", temperature=0.3, thinking_level="medium", system_instruction=load_instruction("bureaucrat.txt"), step="01o_summarizer")
+    result = call_gemini(prompt, None, model_type="forensic", temperature=0.3, thinking_level="medium", system_instruction=load_instruction("bureaucrat.txt"), step="01o_summarizer")
     save_output(result, "01o_summarizer.txt", output_dir)
     return result
 
@@ -596,14 +596,14 @@ def stage_02a_numbers(pdf_path, issues, metadata, output_dir, equations=None):
     prompt = load_prompt("prompts/02a_numbers.txt").replace("{{POTENTIAL_ISSUES}}", issues).replace("{{CITATION}}", get_citation_block(metadata))
     prompt = inject_page_numbers(prompt, metadata)
     prompt = _inject_equations(prompt, equations)
-    result = call_gemini(prompt, pdf_path, model_type="pro_3_1", temperature=0.3, thinking_level="medium", system_instruction=load_instruction("bureaucrat.txt"), step="02a_numbers")
+    result = call_gemini(prompt, pdf_path, model_type="forensic", temperature=0.3, thinking_level="medium", system_instruction=load_instruction("bureaucrat.txt"), step="02a_numbers")
     save_output(result, "02a_numbers.txt", output_dir)
     return result
 
 def stage_02b_compiler_1(issues, numbers, output_dir):
     print("  → 02b Compiler 1 (Sanitize)...")
     prompt = load_prompt("prompts/02b_compiler_1.txt").replace("{{POTENTIAL_ISSUES}}", issues).replace("{{NUMBER_CHECK}}", numbers)
-    result = call_gemini(prompt, None, model_type="flash_2_5", temperature=0.0, thinking_budget=-1, system_instruction=load_instruction("bureaucrat.txt"), step="02b_compiler_1")
+    result = call_gemini(prompt, None, model_type="mechanical", temperature=0.0, thinking_budget=-1, system_instruction=load_instruction("bureaucrat.txt"), step="02b_compiler_1")
     save_output(result, "02b_compiler_1.txt", output_dir)
     return result
 
@@ -611,14 +611,14 @@ def stage_02c_blue_team(pdf_path, compiled_issues_v1, contribs, metadata, output
     print("  → 02c Blue Team...")
     prompt = load_prompt("prompts/02c_blue_team.txt").replace("{{COMPILED_ISSUES_V1}}", compiled_issues_v1).replace("{{CONTRIBUTIONS}}", contribs).replace("{{CITATION}}", get_citation_block(metadata))
     prompt = inject_page_numbers(prompt, metadata)
-    result = call_gemini(prompt, pdf_path, model_type="pro_3_1", temperature=0.2, thinking_level="low", system_instruction=load_instruction("thinker.txt"), step="02c_blue_team")
+    result = call_gemini(prompt, pdf_path, model_type="synthesis", temperature=0.2, thinking_level="medium", system_instruction=load_instruction("thinker.txt"), step="02c_blue_team")
     save_output(result, "02c_blue_team.txt", output_dir)
     return result
 
 def stage_02d_compiler_2(compiled_issues_v1, blue_team, output_dir):
     print("  → 02d Compiler 2 (Add Defence)...")
     prompt = load_prompt("prompts/02d_compiler_2.txt").replace("{{COMPILED_ISSUES_V1}}", compiled_issues_v1).replace("{{BLUE_TEAM}}", blue_team)
-    result = call_gemini(prompt, None, model_type="flash_2_5", temperature=0.0, thinking_budget=-1, system_instruction=load_instruction("bureaucrat.txt"), step="02d_compiler_2")
+    result = call_gemini(prompt, None, model_type="mechanical", temperature=0.0, thinking_budget=-1, system_instruction=load_instruction("bureaucrat.txt"), step="02d_compiler_2")
     save_output(result, "02d_compiler_2.txt", output_dir)
     return result
 
@@ -626,14 +626,14 @@ def stage_02e_assessment(pdf_path, compiled_issues_v2, metadata, output_dir):
     print("  → 02e Assessment...")
     prompt = load_prompt("prompts/02e_assessment.txt").replace("{{COMPILED_ISSUES_V2}}", compiled_issues_v2).replace("{{CITATION}}", get_citation_block(metadata))
     prompt = inject_page_numbers(prompt, metadata)
-    result = call_gemini(prompt, pdf_path, model_type="pro_3_1", temperature=0.4, thinking_level="high", system_instruction=load_instruction("thinker.txt"), step="02e_assessment")
+    result = call_gemini(prompt, pdf_path, model_type="synthesis", temperature=0.4, thinking_level="high", system_instruction=load_instruction("thinker.txt"), step="02e_assessment")
     save_output(result, "02e_assessment.txt", output_dir)
     return result
 
 def stage_02f_compiler_3(compiled_issues_v2, assessment, output_dir):
     print("  → 02f Compiler 3 (Add Assessment)...")
     prompt = load_prompt("prompts/02f_compiler_3.txt").replace("{{COMPILED_ISSUES_V2}}", compiled_issues_v2).replace("{{ASSESSMENT}}", assessment)
-    result = call_gemini(prompt, None, model_type="flash_2_5", temperature=0.0, thinking_budget=-1, system_instruction=load_instruction("bureaucrat.txt"), step="02f_compiler_3")
+    result = call_gemini(prompt, None, model_type="mechanical", temperature=0.0, thinking_budget=-1, system_instruction=load_instruction("bureaucrat.txt"), step="02f_compiler_3")
     save_output(result, "02f_compiler_3.txt", output_dir)
     return result
 
@@ -641,7 +641,7 @@ def stage_02g_list_v1(pdf_path, compiled_issues_v3, metadata, output_dir):
     print("  → 02g List V1 (Finalize)...")
     prompt = load_prompt("prompts/02g_list_v1.txt").replace("{{COMPILED_ISSUES_V3}}", compiled_issues_v3).replace("{{CITATION}}", get_citation_block(metadata))
     prompt = inject_page_numbers(prompt, metadata)
-    result = call_gemini(prompt, pdf_path, model_type="pro_3_1", temperature=0.5, thinking_level="high", system_instruction=load_instruction("thinker.txt"), step="02g_list_v1")
+    result = call_gemini(prompt, pdf_path, model_type="synthesis", temperature=0.5, thinking_level="high", system_instruction=load_instruction("thinker.txt"), step="02g_list_v1")
     save_output(result, "02g_list_v1.txt", output_dir)
     return result
 
@@ -654,7 +654,7 @@ def stage_03a_checker_1(pdf_path, list_v1, metadata, output_dir, equations=None)
     prompt = load_prompt("prompts/03a_checker_1.txt").replace("{{POTENTIAL_ISSUES_V1}}", list_v1).replace("{{CITATION}}", get_citation_block(metadata))
     prompt = inject_page_numbers(prompt, metadata)
     prompt = _inject_equations(prompt, equations)
-    result = call_gemini(prompt, pdf_path, model_type="pro_3_1", temperature=0.5, thinking_level="low", system_instruction=load_instruction("thinker.txt"), step="03a_checker_1")
+    result = call_gemini(prompt, pdf_path, model_type="forensic", temperature=0.5, thinking_level="low", system_instruction=load_instruction("thinker.txt"), step="03a_checker_1")
     save_output(result, "03a_checker_1.txt", output_dir)
     return result
 
@@ -662,7 +662,7 @@ def stage_03b_external(pdf_path, list_v1, metadata, output_dir):
     print("  → 03b External Check...")
     prompt = load_prompt("prompts/03b_external.txt").replace("{{POTENTIAL_ISSUES_V1}}", list_v1).replace("{{CITATION}}", get_citation_block(metadata))
     prompt = inject_page_numbers(prompt, metadata)
-    result = call_gemini(prompt, pdf_path, model_type="flash_2_5", temperature=0.0, thinking_budget=-1, system_instruction=load_instruction("bureaucrat.txt"), step="03b_external")
+    result = call_gemini(prompt, pdf_path, model_type="mechanical", temperature=0.0, thinking_budget=-1, system_instruction=load_instruction("bureaucrat.txt"), step="03b_external")
     save_output(result, "03b_external.txt", output_dir)
     return result
 
@@ -673,7 +673,7 @@ def stage_03c_list_v2(list_v1, fact_check, ext_check, metadata, output_dir):
     prompt = prompt.replace("{{FACT_CHECK}}", fact_check)
     prompt = prompt.replace("{{EXTERNAL_CHECK}}", ext_check)
     prompt = prompt.replace("{{CITATION}}", get_citation_block(metadata))
-    result = call_gemini(prompt, None, model_type="pro_3_1", temperature=0.3, thinking_level="low", system_instruction=load_instruction("bureaucrat.txt"), step="03c_list_v2")
+    result = call_gemini(prompt, None, model_type="forensic", temperature=0.3, thinking_level="low", system_instruction=load_instruction("bureaucrat.txt"), step="03c_list_v2")
     save_output(result, "03c_list_v2.txt", output_dir)
     return result
 
@@ -699,7 +699,7 @@ You can also reference this Appendix, **but you must not confuse it with any app
         prompt += note
 
     prompt = inject_page_numbers(prompt, metadata)
-    result = call_gemini(prompt, pdf_path, model_type="pro_3_1", temperature=0.4, thinking_level="high", system_instruction=load_instruction("thinker.txt"), step="04a_reviewer")
+    result = call_gemini(prompt, pdf_path, model_type="synthesis", temperature=0.4, thinking_level="high", system_instruction=load_instruction("thinker.txt"), step="04a_reviewer")
     save_output(result, "04a_reviewer.txt", output_dir)
     return result
 
@@ -712,7 +712,7 @@ def stage_05a_checker_2(pdf_path, review, metadata, output_dir, equations=None):
     prompt = load_prompt("prompts/05a_checker_2.txt").replace("{{REVIEW}}", review)
     prompt = inject_page_numbers(prompt, metadata)
     prompt = _inject_equations(prompt, equations)
-    result = call_gemini(prompt, pdf_path, model_type="pro_3_1", temperature=0.5, thinking_level="low", system_instruction=load_instruction("thinker.txt"), step="05a_checker_2")
+    result = call_gemini(prompt, pdf_path, model_type="forensic", temperature=0.5, thinking_level="low", system_instruction=load_instruction("thinker.txt"), step="05a_checker_2")
     save_output(result, "05a_checker_2.txt", output_dir)
     return result
 
@@ -720,7 +720,7 @@ def stage_05b_checker_3(pdf_path, review, metadata, output_dir):
     print("  → 05b Checker 3 (Pages/Quotes)...")
     prompt = load_prompt("prompts/05b_checker_3.txt").replace("{{REVIEW}}", review).replace("{{CITATION}}", get_citation_block(metadata))
     prompt = inject_page_numbers(prompt, metadata)
-    result = call_gemini(prompt, pdf_path, model_type="pro_3_1", temperature=0.5, thinking_level="low", system_instruction=load_instruction("thinker.txt"), step="05b_checker_3")
+    result = call_gemini(prompt, pdf_path, model_type="forensic", temperature=0.5, thinking_level="low", system_instruction=load_instruction("thinker.txt"), step="05b_checker_3")
     save_output(result, "05b_checker_3.txt", output_dir)
     return result
 
@@ -731,7 +731,7 @@ def stage_05c_reviser(review, chk2, chk3, metadata, output_dir):
     prompt = prompt.replace("{{SUMMARY}}", metadata.get("abstract_summary", ""))
     prompt = prompt.replace("{{CHECKER_2}}", chk2).replace("{{CHECKER_3}}", chk3)
     prompt = prompt.replace("{{CITATION}}", get_citation_block(metadata))
-    result = call_gemini(prompt, None, model_type="pro_3_1", temperature=0.3, thinking_level="low", system_instruction=load_instruction("thinker.txt"), step="05c_reviser")
+    result = call_gemini(prompt, None, model_type="forensic", temperature=0.3, thinking_level="low", system_instruction=load_instruction("thinker.txt"), step="05c_reviser")
     save_output(result, "05c_reviser.txt", output_dir)
     return result
 
@@ -742,7 +742,7 @@ def stage_05c_reviser(review, chk2, chk3, metadata, output_dir):
 def stage_06_legal(review, metadata, output_dir):
     print("  → 06 Legal...")
     prompt = load_prompt("prompts/06_legal.txt").replace("{{REVIEW_V2}}", review).replace("{{CITATION}}", get_citation_block(metadata))
-    result = call_gemini(prompt, None, model_type="flash_2_5", temperature=0.0, thinking_budget=-1, system_instruction=load_instruction("bureaucrat.txt"), step="06_legal")
+    result = call_gemini(prompt, None, model_type="forensic", temperature=0.0, thinking_budget=-1, system_instruction=load_instruction("bureaucrat.txt"), step="06_legal")
     save_output(result, "06_legal.txt", output_dir)
     return result
 
@@ -766,7 +766,7 @@ def stage_07_formatter(review, legal, metadata, output_dir, appendices=None):
         )
 
     prompt = inject_page_numbers(prompt, metadata, is_code_stage=bool(metadata.get("code_dir")))
-    result = call_gemini(prompt, None, model_type="pro_3_1", temperature=0.3, thinking_level="low", system_instruction=load_instruction("bureaucrat.txt"), step="07_formatter")
+    result = call_gemini(prompt, None, model_type="mechanical", temperature=0.3, thinking_level="low", system_instruction=load_instruction("bureaucrat.txt"), step="07_formatter")
     save_output(result, "07_formatter.txt", output_dir)
     return result
 
@@ -780,7 +780,7 @@ def stage_08a_alchemist(pdf_path, formatted, metadata, output_dir, writer_mode=T
     prompt = prompt.replace("{{FORMATTED_REVIEW}}", formatted)
     prompt = prompt.replace("{{CITATION}}", get_citation_block(metadata))
     prompt = inject_page_numbers(prompt, metadata)
-    result = call_gemini(prompt, pdf_path, model_type="pro_3_1", temperature=0.5, thinking_level="high", system_instruction=load_instruction("thinker.txt"), step="08a_alchemist")
+    result = call_gemini(prompt, pdf_path, model_type="synthesis", temperature=0.5, thinking_level="high", system_instruction=load_instruction("thinker.txt"), step="08a_alchemist")
 
     separator = "===COPYEDITOR_INSTRUCTIONS==="
     if separator in result:
@@ -798,7 +798,7 @@ def stage_08a_alchemist(pdf_path, formatted, metadata, output_dir, writer_mode=T
 def stage_08b_polisher(alchemist_text, metadata, output_dir):
     print("  → 08b Polisher...")
     prompt = load_prompt("prompts/08b_polisher.txt").replace("{{ALCHEMIST}}", alchemist_text).replace("{{CITATION}}", get_citation_block(metadata)).replace("{{PAPER_CONTEXT}}", metadata.get("doc_type", "paper"))
-    result = call_gemini(prompt, None, model_type="pro_3_1", temperature=0.3, thinking_level="low", system_instruction=load_instruction("bureaucrat.txt"), step="08b_polisher")
+    result = call_gemini(prompt, None, model_type="forensic", temperature=0.3, thinking_level="low", system_instruction=load_instruction("bureaucrat.txt"), step="08b_polisher")
     save_output(result, "08b_polisher.txt", output_dir)
     return result
 
@@ -806,14 +806,14 @@ def stage_09a_proofreader(pdf_path, metadata, output_dir, writer_mode=True):
     print("  → 09a Proofreader...")
     prompt = load_prompt("prompts/09a_proofreader.txt")
     prompt = inject_page_numbers(prompt, metadata)
-    result = call_gemini(prompt, pdf_path, model_type="pro_3_1", temperature=0.1, thinking_level="low", system_instruction=load_instruction("bureaucrat.txt"), step="09a_proofreader")
+    result = call_gemini(prompt, pdf_path, model_type="forensic", temperature=0.1, thinking_level="low", system_instruction=load_instruction("bureaucrat.txt"), step="09a_proofreader")
     save_output(result, "09a_proofreader.txt", output_dir)
     return result
 
 def stage_09b_proofread_clean(raw, metadata, output_dir, writer_mode=True):
     print("  → 09b Proofread Clean...")
     prompt = load_prompt("prompts/09b_proofread_clean.txt").replace("{{RAW_PROOFREAD}}", raw)
-    result = call_gemini(prompt, None, model_type="pro_3_1", temperature=0.3, thinking_level="low", system_instruction=load_instruction("bureaucrat.txt"), step="09b_proofread_clean")
+    result = call_gemini(prompt, None, model_type="mechanical", temperature=0.3, thinking_level="low", system_instruction=load_instruction("bureaucrat.txt"), step="09b_proofread_clean")
     save_output(result, "09b_proofread_clean.txt", output_dir)
     return result
 
@@ -824,6 +824,6 @@ def stage_09c_copyedit(pdf_path, review, polished_note, inst, metadata, output_d
     prompt = prompt.replace("{{EDITOR_NOTE}}", polished_note)
     prompt = prompt.replace("{{SECRET_INSTRUCTIONS}}", inst)
     prompt = inject_page_numbers(prompt, metadata)
-    result = call_gemini(prompt, pdf_path, model_type="pro_3_1", temperature=0.2, thinking_level="high", system_instruction=load_instruction("thinker.txt"), step="09c_copyedit")
+    result = call_gemini(prompt, pdf_path, model_type="synthesis", temperature=0.2, thinking_level="high", system_instruction=load_instruction("thinker.txt"), step="09c_copyedit")
     save_output(result, "09c_copyedit.txt", output_dir)
     return result

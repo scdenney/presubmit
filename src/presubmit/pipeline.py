@@ -674,21 +674,32 @@ def _run_inner(
                     writer_pdf.write(f)
                 code_combined_pdf = str(code_combined_path)
 
-            if start_stage <= 1.8 and stop_stage >= 1.8:
-                _run_stage_with_retry(
-                    lambda: stages.stage_01_code_gonzo(code_combined_pdf, metadata, str(work_dir)),
-                    "01i_code_gonzo", max_retries, work_dir=work_dir,
-                )
-            if start_stage <= 1.81 and stop_stage >= 1.81:
-                _run_stage_with_retry(
-                    lambda: stages.stage_01_code_gonzo_b(code_combined_pdf, metadata, str(work_dir)),
-                    "01j_code_gonzo_b", max_retries, work_dir=work_dir,
-                )
-            if start_stage <= 1.82 and stop_stage >= 1.82:
-                _run_stage_with_retry(
-                    lambda: stages.stage_01_code_gonzo_c(code_combined_pdf, metadata, str(work_dir)),
-                    "01k_code_gonzo_c", max_retries, work_dir=work_dir,
-                )
+            # The three code-hunter stages (Divergence/Bug/Data) each read the
+            # same combined PDF independently and don't depend on one
+            # another; run them concurrently like the 01a/01b/01c/01g Red
+            # Team block above.
+            with ThreadPoolExecutor(max_workers=3) as ex:
+                gonzo_futures: dict[str, Any] = {}
+                if start_stage <= 1.8 and stop_stage >= 1.8:
+                    gonzo_futures["01i"] = ex.submit(
+                        _run_stage_with_retry,
+                        lambda: stages.stage_01_code_gonzo(code_combined_pdf, metadata, str(work_dir)),
+                        "01i_code_gonzo", max_retries, work_dir=work_dir,
+                    )
+                if start_stage <= 1.81 and stop_stage >= 1.81:
+                    gonzo_futures["01j"] = ex.submit(
+                        _run_stage_with_retry,
+                        lambda: stages.stage_01_code_gonzo_b(code_combined_pdf, metadata, str(work_dir)),
+                        "01j_code_gonzo_b", max_retries, work_dir=work_dir,
+                    )
+                if start_stage <= 1.82 and stop_stage >= 1.82:
+                    gonzo_futures["01k"] = ex.submit(
+                        _run_stage_with_retry,
+                        lambda: stages.stage_01_code_gonzo_c(code_combined_pdf, metadata, str(work_dir)),
+                        "01k_code_gonzo_c", max_retries, work_dir=work_dir,
+                    )
+                for fut in gonzo_futures.values():
+                    fut.result()
             if start_stage <= 1.83 and stop_stage >= 1.83:
                 g1 = _load_output(work_dir, "01i_code_gonzo.txt") or ""
                 g2 = _load_output(work_dir, "01j_code_gonzo_b.txt") or ""

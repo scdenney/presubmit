@@ -33,21 +33,25 @@ _FILE_CACHE: dict[str, str] = {}
 # Guards _FILE_CACHE so parallel stages don't race on the upload path.
 _FILE_CACHE_LOCK = threading.Lock()
 
-# Upstream reviewer2 model keys → Claude equivalents.
-# Haiku for light/fast stages, Sonnet for mid-tier, Opus for heavy reasoning.
+# Four-tier model routing, keyed by task difficulty rather than upstream
+# Gemini names (the old flash_2_5/pro_3_1-style keys were vestigial from the
+# reviewer2 port and no longer map to anything meaningful now that every call
+# goes to Claude):
+#   mechanical  — pure extraction/dedup/compile-merge, no open-ended judgment
+#   forensic    — bounded verification against the source (quotes, arithmetic)
+#   adversarial — open-ended attack: find problems, don't verify or judge them
+#   synthesis   — adjudication and drafting: the highest-leverage judgment calls
+# Plain model-family aliases are kept alongside the tier names for
+# CLAUDE_MODEL_OVERRIDE convenience (e.g. an all-Haiku smoke run).
 MODELS = {
-    # Claude-native aliases
-    "haiku": "claude-haiku-4-5",
-    "sonnet": "claude-sonnet-4-6",
-    "opus": "claude-opus-4-8",
-    # Upstream Gemini keys remapped so stages.py works unchanged
-    "flash_lite": "claude-haiku-4-5",
-    "flash_lite_3": "claude-haiku-4-5",
-    "flash_2_5": "claude-sonnet-4-6",
-    "flash_3": "claude-sonnet-4-6",
-    "pro_2_5": "claude-sonnet-4-6",
-    "pro_3": "claude-opus-4-8",
-    "pro_3_1": "claude-opus-4-8",
+    "haiku": "claude-haiku-4-5-20251001",
+    "sonnet": "claude-sonnet-5",
+    "opus": "claude-opus-5",
+    "fable": "claude-fable-5",
+    "mechanical": "claude-haiku-4-5-20251001",
+    "forensic": "claude-sonnet-5",
+    "adversarial": "claude-opus-5",
+    "synthesis": "claude-fable-5",
 }
 
 # Anthropic API requires max_tokens. Default if caller does not pass one.
@@ -62,16 +66,16 @@ THINKING_LEVEL_TO_BUDGET = {"low": 2000, "medium": 5000, "high": 10000}
 # Models that take the adaptive-thinking API
 # (`thinking.type=adaptive` + `output_config.effort=low|medium|high`)
 # instead of the legacy `{"type": "enabled", "budget_tokens": N}` format.
-# Adaptive is required on Opus 4.7/4.8 and Fable 5 (the legacy form 400s) and is
-# the recommended path on Opus 4.6 and Sonnet 4.6 (legacy `budget_tokens` is
-# deprecated there). `effort` is supported on all of these but errors on
+# Adaptive is required on Opus 4.7+ (including 5), Sonnet 5, and Fable 5 (the
+# legacy form 400s on these) and was already the recommended path on Opus 4.6
+# and Sonnet 4.6. `effort` is supported on all of these but errors on
 # Haiku 4.5, which therefore stays on the legacy budget_tokens path.
-_ADAPTIVE_THINKING_MODELS = ("opus-4-6", "opus-4-7", "opus-4-8", "sonnet-4-6", "fable-5")
+_ADAPTIVE_THINKING_MODELS = ("opus-4-6", "opus-4-7", "opus-4-8", "opus-5", "sonnet-4-6", "sonnet-5", "fable-5")
 
 # Models that reject sampling parameters (`temperature`/`top_p`/`top_k` → 400).
-# Opus 4.7 removed them; Opus 4.8 and Fable 5 inherit that. Sonnet 4.6, Opus 4.6,
-# Haiku 4.5, and older still accept `temperature`.
-_NO_SAMPLING_PARAMS_MODELS = ("opus-4-7", "opus-4-8", "fable-5")
+# Opus 4.7 removed them; Opus 4.8, Opus 5, and Fable 5 inherit that. Sonnet
+# (4.6 and 5), Opus 4.6, Haiku 4.5, and older still accept `temperature`.
+_NO_SAMPLING_PARAMS_MODELS = ("opus-4-7", "opus-4-8", "opus-5", "fable-5")
 
 
 def _budget_to_effort(budget: int) -> str:
@@ -152,7 +156,7 @@ _CACHE_MIN_CHARS = 4096
 def call_claude(
     prompt=None,
     pdf_file_path=None,
-    model_type="flash_lite",
+    model_type="haiku",
     temperature=0.1,
     thinking_level=None,
     thinking_budget=None,

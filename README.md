@@ -20,13 +20,13 @@ Output is one `report.txt` plus, optionally, an editor's note and copyediting su
 
 ## PDF handling and cost
 
-`presubmit` does **not** re-upload the source PDF to every Claude call. It would be a token muncher: an 80-page paper sent as PDF burns ~500K input tokens per stage (page rasters are ~1.6K tokens each), and across 30+ stages that runs ~$25–60 per paper on Opus 4.8. So the pipeline does not work that way.
+`presubmit` does **not** re-upload the source PDF to every Claude call. It would be a token muncher: an 80-page paper sent as PDF burns ~500K input tokens per stage (page rasters are ~1.6K tokens each), and across 30+ stages that runs into the tens of dollars per paper even on the cheapest tier. So the pipeline does not work that way.
 
 Instead, the pipeline converts the PDF to markdown **once** at start (using [`marker-pdf`](https://github.com/VikParuchuri/marker), which preserves table structure and figure captions) and routes ~25 of the ~30 stages to that markdown. The markdown is sent as a cache-controlled content block, so the second through Nth stages within Anthropic's 5-minute prompt-cache window pay roughly 10% of the first call's input cost.
 
 The 7 stages that genuinely need page rasters — the math chain (`01e`, `01e2`, `01fa`–`01fd`) and `09a_proofreader` (which checks layout) — keep using the PDF directly. Everything else reasons over the markdown.
 
-**Estimated cost on a typical 80-page paper, Opus 4.8:** ~$2–4 per full run with this routing. Without the PDF→markdown step, the same paper would cost ~$25–30.
+**Estimated cost on a typical 80-page paper, current four-tier routing (see "Model tier mapping" below).** Roughly $2–4 per full run, in the same ballpark as the prior two-tier (Sonnet/Opus) routing. The stages moved up to the pricier Fable tier are offset by the stages moved down to Sonnet and Haiku. On a shorter article (a few thousand words rather than 80 pages), expect well under $2. Most of the ~45 calls carry a fixed per-stage floor (thinking budget, findings write-up) that doesn't shrink with the source, so cost scales sub-linearly with paper length. These are estimates extrapolated from the routing and pricing tables, not a captured measurement from a real run. If you run a full paper end to end, the exact total prints in the end-of-run cost report — share it back (see "Status" below).
 
 **Why `marker-pdf` is a hard dependency.** `marker-pdf` is what makes the converted markdown high-fidelity enough to substitute for the PDF on text-only stages. Plain `pypdf` text extraction loses table structure and figure captions, which materially weakens what the Butcher / Numbers / Reviewer stages can reason about on table-heavy papers. The pipeline therefore refuses to fall back to it; if marker fails to import or convert, the run halts with `PipelineError` rather than producing a degraded review silently. If you need to bypass marker (e.g., you already have the source as `.md` or `.tex`), pass that file directly — the CLI accepts any of `.pdf`, `.md`, `.markdown`, `.txt`, `.tex`.
 
@@ -143,36 +143,35 @@ Upstream stage `00a_metadata` uses Gemini's `GoogleSearch` tool to look up the p
 
 Gemini's `ThinkingConfig` takes either a `thinking_budget` (integer token count, or `-1` for "unbounded") or a `thinking_level` ("low" / "medium" / "high"). Claude has two thinking APIs, and the port picks per model (`_ADAPTIVE_THINKING_MODELS` in `core.py`):
 
-**Adaptive path** — Opus 4.7/4.8 (the `pro_3`/`pro_3_1` tier, used by the heavy stages). Legacy `budget_tokens` was removed on these models, so the port sends `thinking={"type": "adaptive"}` with `output_config={"effort": ...}`:
+**Adaptive path** — Opus 5 and Fable 5 (the `adversarial`/`synthesis` tiers, used by the heavy stages), plus Sonnet 5 (`forensic`). Legacy `budget_tokens` was removed on these models, so the port sends `thinking={"type": "adaptive"}` with `output_config={"effort": ...}`:
 - `thinking_level="low" / "medium" / "high"` → `effort="low" / "medium" / "high"`
 - `thinking_budget=N` → effort bucketed from the budget (`<3000` → low, `<8000` → medium, else high); `-1` → high
 
-**Legacy path** — Sonnet / Haiku tiers:
+**Legacy path** — Haiku (`mechanical`) only:
 - `thinking_budget=N` → `{"type": "enabled", "budget_tokens": N}` if `N >= 1024`, else disabled
 - `thinking_budget=-1` → `budget_tokens=12000` (approximate "unbounded")
 - `thinking_level="low" / "medium" / "high"` → `budget_tokens=2000 / 5000 / 10000`
 
 The `high` budget is deliberately conservative — Claude's thinking tokens are priced per-token output, so ramping higher than 10k on 30+ stages adds up fast. If you find specific stages under-thinking, bump the `THINKING_LEVEL_TO_BUDGET` map (legacy) or `_budget_to_effort` thresholds (adaptive) in `core.py`.
 
-Also: Claude's extended thinking **requires `temperature=1`**. The port overrides any caller-supplied temperature when thinking is enabled. Stages that rely on `temperature=0.0` for determinism will get `temperature=1.0` silently whenever they also use thinking. In practice this has minimal impact on output consistency for the review task.
+Claude's extended thinking also **requires `temperature=1`**, but Opus 5 and Fable 5 reject any explicit `temperature` kwarg outright, including `=1`. The port drops the `temperature=` kwarg entirely for those two tiers (`_NO_SAMPLING_PARAMS_MODELS` in `core.py`) and sets `temperature=1.0` on the legacy path for the tiers that still accept it. Stages that pass `temperature=0.0` for determinism get this overridden whenever thinking is enabled. In practice this has minimal impact on output consistency for the review task.
 
 ### 4. Model tier mapping
 
-Upstream assigns stages to specific Gemini model keys (`flash_lite`, `flash_2_5`, `pro_2_5`, `pro_3`, `pro_3_1`). The port maps these to Claude as follows:
+Upstream assigns stages to specific Gemini model keys (`flash_lite`, `flash_2_5`, `pro_2_5`, `pro_3`, `pro_3_1`). The port no longer mirrors those upstream key names — `MODELS` in `core.py` is keyed by task difficulty instead, since that's what actually determines which Claude model a stage needs:
 
-| Upstream key   | Claude model         | Use case                              |
-|----------------|----------------------|---------------------------------------|
-| `flash_lite`   | `claude-haiku-4-5`   | Light validators, structure checks    |
-| `flash_2_5`    | `claude-sonnet-4-6`  | Mid-tier reasoning (Red Team support) |
-| `pro_2_5`      | `claude-sonnet-4-6`  | Red Team primary                      |
-| `pro_3`        | `claude-opus-4-8`    | Heavy reasoning                       |
-| `pro_3_1`      | `claude-opus-4-8`    | Heavy reasoning, review synthesis     |
+| Tier          | Claude model | Use case                                                                    |
+|---------------|--------------|-------------------------------------------------------------------------------|
+| `mechanical`  | Haiku 4.5    | Pure extraction, dedup/compile-merge steps, rule-based checklist passes       |
+| `forensic`    | Sonnet 5     | Bounded verification against the source (quote/citation/arithmetic checks)    |
+| `adversarial` | Opus 5       | Open-ended attack: finding problems, not verifying or judging them            |
+| `synthesis`   | Fable 5      | Adjudication and drafting: weighing Red Team vs. Blue Team, writing the review, Writer Mode |
 
-This mapping is a starting point, not a calibrated equivalence. Claude Sonnet is plausibly a closer stand-in for Gemini Pro 2.5 than for Flash; Claude Opus is plausibly overkill for some Gemini Pro 3.1 stages. Treat it as a tunable dial in `src/presubmit/core.py`.
+The primary Red Team attackers (Breaker, Butcher, Void) route to `adversarial` (Opus). The stages that judge and synthesize what they find (Blue Team, Assessment, the Reviewer draft, Writer Mode) route to `synthesis` (Fable) instead of sharing Opus with the attackers. Under the prior two-tier mapping, the critics and their judge ran on the same model, which blunted the adversarial contrast the pipeline is built around. This mapping is still a tunable dial, not a calibrated equivalence — see `src/presubmit/core.py`.
 
 ## Cost tracking
 
-`src/presubmit/data/pricing.csv` carries per-million-token rates for the Claude models the port uses (Haiku 4.5, Sonnet 4.6, Opus 4.8 — current as of 2026-06), so the end-of-run `calculate_cost()` report prints real dollar totals. The upstream Gemini rows are retained for reference. If Anthropic's pricing changes or you remap model tiers, update the CSV; the authoritative spend record is always the Anthropic console.
+`src/presubmit/data/pricing.csv` carries per-million-token rates for the four Claude models the port uses (Haiku 4.5, Sonnet 5, Opus 5, Fable 5), so the end-of-run `calculate_cost()` report prints real dollar totals. Sonnet 5 is on introductory pricing ($2/$10 per MTok input/output) through 2026-08-31, stepping up to $3/$15 after — update the CSV then. If Anthropic's pricing changes or you remap model tiers, update the CSV. The authoritative spend record is always the Anthropic console.
 
 ## What's the same as upstream
 
@@ -205,8 +204,7 @@ This project is built for remixing, reuse, and adaptation, including commercial 
 ## Status
 
 **Beta.** The port compiles and the API surface is covered, but:
-- No end-to-end smoke-tested run has been recorded yet.
-- Pricing CSV is stale (Claude rates not populated).
+- No end-to-end smoke-tested run has been recorded yet against the current four-tier (Haiku/Sonnet/Opus/Fable) routing — the cost figures above are extrapolated from the routing and pricing tables, not a captured run.
 - The `use_search` replacement is a stub.
 - Red Team prompts have not been systematically softened for Claude's safety policy — expect some refusals on first runs; file issues.
 
