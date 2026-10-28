@@ -120,6 +120,8 @@ Hedging words can be used where appropriate:
 - "apparently"
 But do not overuse them!!
 
+**The burden is the text's.** The strongest charge is that the evidence does not establish a claim; do not assert the opposite claim. Write that a result disappears, fails, or is refuted only when an estimate excludes the text's figure. When an interval contains both zero and the text's figure, say what the data cannot tell apart, and give the interval.
+
 **Sound Human**
 Write naturally. Do not reproduce the language of these instructions.
 Prefer direct hedging over convoluted qualifications:

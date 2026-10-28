@@ -155,6 +155,7 @@ _SECTION_HEADERS = [
     (re.compile(r"##\s*\**Data Editor\**\s*", re.IGNORECASE), "DATA EDITOR", ""),
     (re.compile(r"##\s*\**Potential Issues\**\s*", re.IGNORECASE), "POTENTIAL ISSUES", ""),
     (re.compile(r"##\s*\**Future Research\**\s*", re.IGNORECASE), "FUTURE RESEARCH", ""),
+    (re.compile(r"##\s*\**References\**\s*", re.IGNORECASE), "REFERENCES", ""),
 ]
 
 

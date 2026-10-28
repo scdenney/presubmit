@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "presubmit"
-version = "0.1.0"
+version = "0.2.0"
 description = "Claude-powered adversarial peer review for academic PDFs: red-team critique, claim verification, and structured review reports."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,6 +29,7 @@ dependencies = [
     "pypdf",
     "reportlab",
     "requests",
+    "python-docx",
 ]
 
 [project.optional-dependencies]

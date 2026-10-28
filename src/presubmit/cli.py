@@ -52,8 +52,21 @@ def build_parser() -> argparse.ArgumentParser:
              "either skips all Writer-Mode stages.",
     )
     parser.add_argument(
+        "--no-references", action="store_true",
+        help="Skip the reference check (bibliography lookups against OpenAlex, "
+             "Crossref and OpenLibrary, plus a grounded web search).",
+    )
+    parser.add_argument(
         "--base", action="store_true",
         help="Base review only. Disables every add-on: math, code, copyedit, editor's note.",
+    )
+    parser.add_argument(
+        "--note", default="", metavar="TEXT",
+        help="Instructions to the reviewer, prepended to the paper as an extra first page.",
+    )
+    parser.add_argument(
+        "--note-file", default=None, metavar="PATH",
+        help="Read the reviewer note from a text file.",
     )
     parser.add_argument(
         "--supp", action="append", default=[], metavar="PDF",
@@ -78,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--skip-size-check", action="store_true",
-        help="Bypass the 500-page combined-volume circuit breaker.",
+        help="Bypass the 1000-page combined-volume limit.",
     )
     parser.add_argument(
         "--start-stage", type=float, default=0.0, metavar="N.N",
@@ -230,6 +243,9 @@ def main(argv: list[str] | None = None) -> int:
         ext = ".md"
 
     _require_env("ANTHROPIC_API_KEY", "for the Anthropic API")
+    note = args.note
+    if args.note_file:
+        note = Path(args.note_file).expanduser().read_text(encoding="utf-8")
     addons = resolve_addons(args)
     if addons["math"]:
         if ext != ".pdf":
@@ -259,6 +275,8 @@ def main(argv: list[str] | None = None) -> int:
             editor_note=addons["editor_note"],
             supp_pdfs=args.supp or None,
             code_dir=args.code_dir,
+            references=not args.no_references,
+            note=note,
             citation=args.citation,
             start_stage=args.start_stage,
             stop_stage=args.stop_stage,

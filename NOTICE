@@ -13,7 +13,12 @@ This project is a derivative work of `reviewer2` by The Catalogue of Errors Ltd
 under Apache-2.0. Prompts, pipeline structure, and non-LLM PDF tooling
 originate from that upstream. The Apache-2.0 license text for upstream-derived
 material is retained at LICENSES/Apache-2.0.txt. The LLM client layer has been
-rewritten to target Anthropic Claude instead of Google Gemini.
+rewritten to target Anthropic Claude instead of Google Gemini. The port tracks
+upstream v2.0.0 (2026-10-26), its final release.
+
+Four prompt additions (01b, 02c, 02e, 04a) adapt rules from `research_skills`
+by The Catalogue of Errors Ltd (https://github.com/isitcredible/research_skills),
+released under the MIT License.
 
 The names "Reviewer 2", "isitcredible.com", and "The Catalogue of Errors"
 are trademarks of The Catalogue of Errors Ltd. Per upstream's NOTICE,

@@ -8,7 +8,7 @@ from presubmit.core import call_claude, call_gemini, cleanup_resources
 from presubmit.pipeline import PipelineError, run
 from presubmit.render_text import render_text
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
     "call_claude",
     "call_gemini",  # back-compat alias for ported stage code

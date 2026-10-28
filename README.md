@@ -2,7 +2,7 @@
 
 **Claude-powered adversarial peer review for academic PDFs: red-team critique, claim verification, and structured review reports.**
 
-A derivative of [`reviewer2`](https://github.com/isitcredible/reviewer2) (Apache-2.0, © The Catalogue of Errors Ltd) with the LLM client layer rewritten to call Claude instead of Gemini. All prompts, pipeline structure, and non-LLM tooling (PDF merge, code ingestion, Mathpix math OCR) are ported largely verbatim from upstream; only the API client and model routing are new.
+A derivative of [`reviewer2`](https://github.com/isitcredible/reviewer2) (Apache-2.0, © The Catalogue of Errors Ltd) with the LLM client layer rewritten to call Claude instead of Gemini. All prompts, pipeline structure, and non-LLM tooling (PDF merge, code ingestion, Mathpix math OCR, page map, reference check) are ported largely verbatim from upstream v2.0.0, its final release; the API client, model routing, the markdown route for text stages, and a few prompt additions (see "Changes to upstream prompts") are new.
 
 > **If you are deciding between this and upstream:** try upstream `reviewer2` on Gemini first if you can. It is the reference implementation, has been benchmarked against 5 alternatives (15 wins / 4 ties / 1 loss in the accompanying paper), and uses Gemini features (grounded search, permissive safety overrides) that this port cannot fully replicate. Use `presubmit` when you need Claude (budget, stack, policy preference) or want to run the pipeline against a different model family for comparison. See "Known trade-offs" below.
 
@@ -14,7 +14,10 @@ Takes a manuscript PDF and produces a plain-text critical review via a 30+ stage
 - **Blue Team** defends: goes through each red-team issue and produces an honest defence where one exists.
 - **Verification cascade**: numbers audit, assessment agent, list compilation; then a fact-checker walks citations and external claims, and an external-check agent validates quotes.
 - **Review assembly + legal pass**: reviewer agent synthesises; a second cross-check + reviser cleans; a legal pass softens any claim-like language.
-- **Writer Mode** (default on): alchemist + polisher + proofreader + copyeditor produce a polished author-facing version of the review.
+- **Proportionality** (02h, 02i): demotes objections an author could dismiss from their own text and deepens the ones the argument rests on, before the checks run.
+- **Reference check** (default on, `--no-references` to skip): every bibliography entry is looked up in OpenAlex, Crossref and OpenLibrary, with a web search for what those cannot confirm; the report gains a section listing entries that could not be confirmed.
+- **Page map**: printed page numbers are mapped to PDF pages so stages can cite printed pages, and citation corrections that point outside the document are rejected.
+- **Writer Mode** (default on): alchemist + polisher + proofreader + copyeditor produce a polished author-facing version of the review; with `--math`, a math advisor ranks remedies for each confirmed math error.
 
 Output is one `report.txt` plus, optionally, an editor's note and copyediting suggestions. Runs are **resumable**: deleting a stage file in the work directory forces that stage (and dependents) to re-run on the next invocation.
 
@@ -24,7 +27,7 @@ Output is one `report.txt` plus, optionally, an editor's note and copyediting su
 
 Instead, the pipeline converts the PDF to markdown **once** at start (using [`marker-pdf`](https://github.com/VikParuchuri/marker), which preserves table structure and figure captions) and routes ~25 of the ~30 stages to that markdown. The markdown is sent as a cache-controlled content block, so the second through Nth stages within Anthropic's 5-minute prompt-cache window pay roughly 10% of the first call's input cost.
 
-The 7 stages that genuinely need page rasters — the math chain (`01e`, `01e2`, `01fa`–`01fd`) and `09a_proofreader` (which checks layout) — keep using the PDF directly. Everything else reasons over the markdown.
+The stages that genuinely need page rasters keep using the PDF directly: the math chain (`01e`, `01e2`, `01fa`–`01fc`, `01fe`), the math advisor (`08`), `09a_proofreader` (which checks layout), the page-map reconciliation, and the code audit (which merges the paper with the compiled code). Everything else reasons over the markdown. One consequence: the page map is built from the PDF, but the markdown carries no page breaks, so text stages cite printed pages less reliably than upstream's all-PDF route.
 
 **Estimated cost on a typical 80-page paper, current four-tier routing (see "Model tier mapping" below).** Roughly $2–4 per full run, in the same ballpark as the prior two-tier (Sonnet/Opus) routing. The stages moved up to the pricier Fable tier are offset by the stages moved down to Sonnet and Haiku. On a shorter article (a few thousand words rather than 80 pages), expect well under $2. Most of the ~45 calls carry a fixed per-stage floor (thinking budget, findings write-up) that doesn't shrink with the source, so cost scales sub-linearly with paper length. These are estimates extrapolated from the routing and pricing tables, not a captured measurement from a real run. If you run a full paper end to end, the exact total prints in the end-of-run cost report — share it back (see "Status" below).
 
@@ -107,6 +110,8 @@ For a cheap smoke run, force every stage to Haiku:
 CLAUDE_MODEL_OVERRIDE=haiku presubmit paper.pdf -o smoke.txt
 ```
 
+To give the reviewer instructions (prepended to the paper as a first page), pass `--note "..."` or `--note-file notes.txt`. To skip the reference check, pass `--no-references`.
+
 To stop after the Red Team passes (useful for verifying the markdown conversion + first round of stages without committing to a full run):
 
 ```bash
@@ -115,7 +120,7 @@ presubmit paper.pdf -o smoke.txt --stop-stage 2.0
 
 ## Known trade-offs vs. upstream Gemini
 
-This port is not a perfect replica. Four places the Gemini and Claude implementations diverge:
+This port is not a perfect replica. The places the Gemini and Claude implementations diverge:
 
 ### 1. Safety policy
 
@@ -130,14 +135,7 @@ If you hit systematic refusals on a specific stage, file an issue with the stage
 
 ### 2. Grounded web search
 
-Upstream stage `00a_metadata` uses Gemini's `GoogleSearch` tool to look up the paper on the open web when metadata is ambiguous (for example, to resolve a title to a DOI, find the published citation, verify an author affiliation). **Claude has no native grounded-search tool.** The port accepts the `use_search=True` kwarg but currently *ignores it* and logs a warning.
-
-**What this costs:** metadata extraction on unpublished manuscripts is unaffected (the PDF itself is the source). For published papers where the PDF lacks a clean citation block, the metadata fields (DOI, canonical venue, author affiliation) degrade: Claude can only use what's visible in the PDF. Downstream stages are unaffected.
-
-**Workarounds if you need it:**
-- Add a Tavily, Brave, or SerpAPI call inside `call_claude(..., use_search=True)` — the hook is there; the implementation is a TODO.
-- Run inside Claude Code (where Claude has a `WebSearch` tool) and wire that through.
-- Accept degraded metadata and hand-edit the citation field before writing the report.
+Upstream uses Gemini's Google Search grounding in `00a_metadata` (to resolve a title to a DOI or published citation) and in the reference check (to look up entries the bibliographic indexes cannot confirm). The port maps `use_search=True` to Anthropic's server-side web search tool: the dynamic-filtering variant (`web_search_20260209`) on Sonnet and Opus, the basic variant on Haiku, at most five searches per call. Upstream's Python code execution for the math defence (`CODE_EXEC_STEPS=01fe_math_blue`) maps to the server-side code execution tool. Searches are billed per search on top of tokens, and the end-of-run cost report does not include them; the Anthropic console does.
 
 ### 3. Extended thinking semantics
 
@@ -154,7 +152,7 @@ Gemini's `ThinkingConfig` takes either a `thinking_budget` (integer token count,
 
 The `high` budget is deliberately conservative — Claude's thinking tokens are priced per-token output, so ramping higher than 10k on 30+ stages adds up fast. If you find specific stages under-thinking, bump the `THINKING_LEVEL_TO_BUDGET` map (legacy) or `_budget_to_effort` thresholds (adaptive) in `core.py`.
 
-Claude's extended thinking also **requires `temperature=1`**, but Opus 5 and Fable 5 reject any explicit `temperature` kwarg outright, including `=1`. The port drops the `temperature=` kwarg entirely for those two tiers (`_NO_SAMPLING_PARAMS_MODELS` in `core.py`) and sets `temperature=1.0` on the legacy path for the tiers that still accept it. Stages that pass `temperature=0.0` for determinism get this overridden whenever thinking is enabled. In practice this has minimal impact on output consistency for the review task.
+The port sends no `temperature`. API version 2026-10-21 rejects sampling parameters on every model, and the anthropic 2.x SDK, which sends that version, no longer accepts them as arguments. Upstream's per-stage temperatures (0.0 for extraction, up to 0.5 for divergent Red Team passes) are therefore ignored; every call runs at the model default.
 
 ### 4. Model tier mapping
 
@@ -175,12 +173,30 @@ The primary Red Team attackers (Breaker, Butcher, Void) route to `adversarial` (
 
 ## What's the same as upstream
 
-- All 42 stage prompts, plus the three persona system-instruction files (except the persona name change "Reviewer 2" → "Critical Reviewer" per the upstream trademark NOTICE).
-- Pipeline sequencing, checkpoint resumability, work-dir layout.
+- The stage prompts and the three persona system-instruction files of upstream v2.0.0, except the persona name change "Reviewer 2" → "Critical Reviewer" per the upstream trademark NOTICE and the additions listed below.
+- Pipeline sequencing, parallel tracks, `--start-stage` / `--stop-stage` resumption, work-dir layout. The port adds one thing: a stage whose output file already exists in the work directory is read back rather than re-run.
 - PDF preprocessing (ghostscript + pypdf fallback), supplement merging, code-zip ingestion.
 - Mathpix math-OCR integration (opt-in).
 - Output formats: plain-text report, optional editor's note, optional copyediting suggestions.
 - Report rendering (`render_text.py`).
+
+## Changes to upstream prompts
+
+Four additions, adapted from the same author's successor suite, [`research_skills`](https://github.com/isitcredible/research_skills) (MIT):
+
+- **Butcher (`01b`)** checks every "results are robust to X" sentence against every outcome in the table it cites.
+- **Blue Team (`02c`)** states the concern that survives when a Red Team issue rests on a mistake only partly, and credits a balance, placebo, or pre-trend test only if it could have failed.
+- **Assessment (`02e`)** applies the same bar when it audits an empirical defence.
+- **Reviewer (`04a`)** keeps the burden on the text: a result "disappears" or is "refuted" only when an estimate excludes the text's figure; otherwise the review says what the data cannot tell apart.
+
+## Tests
+
+`tests/` holds upstream's offline end-to-end run (every model call replaced by a canned response, marker replaced by plain text extraction) plus tests of the markdown route, the stage cache, and the Claude client's tool wiring:
+
+```bash
+pip install -e '.[dev]'
+pytest -q tests
+```
 
 ## Related peer-review automation systems
 
@@ -204,8 +220,7 @@ This project is built for remixing, reuse, and adaptation, including commercial 
 ## Status
 
 **Beta.** The port compiles and the API surface is covered, but:
-- No end-to-end smoke-tested run has been recorded yet against the current four-tier (Haiku/Sonnet/Opus/Fable) routing — the cost figures above are extrapolated from the routing and pricing tables, not a captured run.
-- The `use_search` replacement is a stub.
+- No end-to-end run against the live API has been recorded yet against the current four-tier (Haiku/Sonnet/Opus/Fable) routing — the cost figures above are extrapolated from the routing and pricing tables, not a captured run. The offline test suite covers the stage graph, not model output.
 - Red Team prompts have not been systematically softened for Claude's safety policy — expect some refusals on first runs; file issues.
 
 Contributions welcome. If you run a full review and can share a timing + refusal-incidence report, that's especially useful.

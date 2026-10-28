@@ -23,10 +23,13 @@ from pathlib import Path
 import anthropic
 from pypdf import PdfReader, PdfWriter
 
-from presubmit.paths import prompts_dir
+from presubmit.paths import prompt_path, prompts_dir
 
 # Per-call usage records. Appended by call_claude, consumed by helpers.calculate_cost.
 USAGE_LOG: list[dict] = []
+
+# Set by pipeline.run so usage records carry the run they belong to.
+CURRENT_JOB_UUID: str | None = None
 
 # { local_file_path: claude_file_id }. Reset with cleanup_resources.
 _FILE_CACHE: dict[str, str] = {}
@@ -72,10 +75,10 @@ THINKING_LEVEL_TO_BUDGET = {"low": 2000, "medium": 5000, "high": 10000}
 # Haiku 4.5, which therefore stays on the legacy budget_tokens path.
 _ADAPTIVE_THINKING_MODELS = ("opus-4-6", "opus-4-7", "opus-4-8", "opus-5", "sonnet-4-6", "sonnet-5", "fable-5")
 
-# Models that reject sampling parameters (`temperature`/`top_p`/`top_k` → 400).
-# Opus 4.7 removed them; Opus 4.8, Opus 5, and Fable 5 inherit that. Sonnet
-# (4.6 and 5), Opus 4.6, Haiku 4.5, and older still accept `temperature`.
-_NO_SAMPLING_PARAMS_MODELS = ("opus-4-7", "opus-4-8", "opus-5", "fable-5")
+# Sampling parameters are never sent. API version 2026-10-21 rejects
+# `temperature`/`top_p`/`top_k` on every model, and the anthropic 2.x SDK that
+# sends that version no longer accepts them as arguments. The stages' upstream
+# `temperature` values are accepted and ignored.
 
 
 def _budget_to_effort(budget: int) -> str:
@@ -88,6 +91,25 @@ def _budget_to_effort(budget: int) -> str:
 
 # Beta flag required for the Files API.
 _FILES_API_BETA = "files-api-2025-04-14"
+
+# Server-side tools standing in for Gemini's Google Search grounding and code
+# execution. The dynamic-filtering web search variant runs only on the models
+# below; every other model gets the basic variant.
+_WEB_SEARCH_DYNAMIC_MODELS = ("opus-4-6", "opus-4-7", "opus-4-8", "opus-5", "sonnet-4-6", "sonnet-5")
+_WEB_SEARCH_MAX_USES = 5
+_CODE_EXEC_TOOL = {"type": "code_execution_20260521", "name": "code_execution"}
+# A server-tool turn can pause mid-way (stop_reason=pause_turn); resend to let
+# it finish, at most this many times.
+_MAX_PAUSE_CONTINUATIONS = 5
+
+
+def _web_search_tool(model_name: str) -> dict:
+    dynamic = any(tag in model_name for tag in _WEB_SEARCH_DYNAMIC_MODELS)
+    return {
+        "type": "web_search_20260209" if dynamic else "web_search_20250305",
+        "name": "web_search",
+        "max_uses": _WEB_SEARCH_MAX_USES,
+    }
 
 
 def get_or_upload_file(client: anthropic.Anthropic, file_path: str, force_upload: bool = False) -> str:
@@ -157,7 +179,7 @@ def call_claude(
     prompt=None,
     pdf_file_path=None,
     model_type="haiku",
-    temperature=0.1,
+    temperature=None,  # accepted for upstream signature compat; never sent
     thinking_level=None,
     thinking_budget=None,
     media_resolution=None,  # kept for upstream signature compat; unused by Claude
@@ -167,6 +189,8 @@ def call_claude(
     step=None,
     use_search=False,
     max_output_tokens=None,
+    use_code_exec=False,
+    timeout=1800,
 ):
     """Call Claude with retries, PDF caching, and extended-thinking support.
 
@@ -187,8 +211,11 @@ def call_claude(
     ``CLAUDE_MODEL_OVERRIDE`` in the environment forces every call to a single
     model, useful for cheap smoke runs against Haiku.
 
-    Note: ``use_search`` is accepted but currently a no-op — Claude has no
-    native grounded search. See README "Known trade-offs vs. upstream".
+    ``use_search`` attaches Anthropic's server-side web search tool (the
+    counterpart of upstream's Google Search grounding); ``use_code_exec``
+    attaches the server-side code execution tool, also switched on for any
+    step named in the comma-separated ``CODE_EXEC_STEPS`` environment variable.
+    ``timeout`` is the per-request HTTP timeout in seconds.
     """
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
@@ -203,7 +230,10 @@ def call_claude(
         print(f"  ⚠  Warning: Unknown model_type '{model_type}', falling back to haiku")
         model_name = MODELS["haiku"]
 
-    client = anthropic.Anthropic(api_key=api_key)
+    if step and step in os.environ.get("CODE_EXEC_STEPS", "").split(","):
+        use_code_exec = True
+
+    client = anthropic.Anthropic(api_key=api_key, timeout=timeout)
 
     # Extended thinking configuration.
     # Two API shapes coexist:
@@ -211,7 +241,6 @@ def call_claude(
     #   - adaptive: thinking={"type": "adaptive"}, output_config={"effort": "low|medium|high"}
     # Opus 4.7+ (including Opus 4.8) dropped legacy. We pick per-model.
     use_adaptive = any(tag in model_name for tag in _ADAPTIVE_THINKING_MODELS)
-    rejects_sampling = any(tag in model_name for tag in _NO_SAMPLING_PARAMS_MODELS)
     thinking_cfg = None
     output_config = None
 
@@ -239,12 +268,13 @@ def call_claude(
         if max_tok <= thinking_cfg["budget_tokens"]:
             max_tok = thinking_cfg["budget_tokens"] + 8000
 
+    # Web search already runs code under the hood for dynamic filtering, so the
+    # two tools are never declared together (upstream likewise prefers search).
+    tools = None
     if use_search:
-        print(
-            "    ⚠  use_search=True requested, but Claude has no native grounded "
-            "search. Proceeding without web-grounded results. "
-            "See README for workarounds."
-        )
+        tools = [_web_search_tool(model_name)]
+    elif use_code_exec:
+        tools = [_CODE_EXEC_TOOL]
 
     attempt = 0
     base_delay = 5
@@ -310,31 +340,38 @@ def call_claude(
         }
         if system_instruction:
             kwargs["system"] = system_instruction
+        if tools:
+            kwargs["tools"] = tools
         if thinking_cfg:
             kwargs["thinking"] = thinking_cfg
             if output_config:
                 kwargs["output_config"] = output_config
-            # Legacy extended thinking (`type: enabled`) requires temperature=1;
-            # adaptive thinking does not. Models that reject sampling params
-            # (Opus 4.7/4.8, Fable 5) 400 on any temperature, including =1 — so
-            # only set it on the legacy path for models that still accept it.
-            if thinking_cfg.get("type") == "enabled" and not rejects_sampling:
-                kwargs["temperature"] = 1.0
-        elif not rejects_sampling:
-            kwargs["temperature"] = temperature
 
         try:
             # Files API beta header is only needed when actually uploading a
             # PDF; markdown content goes through the standard messages
             # endpoint (which supports prompt caching cleanly).
-            if is_pdf_upload:
-                response = client.beta.messages.create(betas=[_FILES_API_BETA], **kwargs)
-            else:
-                response = client.messages.create(**kwargs)
+            def _create(**kw):
+                if is_pdf_upload:
+                    return client.beta.messages.create(betas=[_FILES_API_BETA], **kw)
+                return client.messages.create(**kw)
+
+            response = _create(**kwargs)
+            responses = [response]
+            continuations = 0
+            while (getattr(response, "stop_reason", None) == "pause_turn"
+                   and continuations < _MAX_PAUSE_CONTINUATIONS):
+                continuations += 1
+                kwargs["messages"] = kwargs["messages"] + [
+                    {"role": "assistant", "content": response.content}]
+                response = _create(**kwargs)
+                responses.append(response)
 
             # Usage log.
-            usage = getattr(response, "usage", None)
-            if usage:
+            for resp in responses:
+                usage = getattr(resp, "usage", None)
+                if not usage:
+                    continue
                 p_tok = getattr(usage, "input_tokens", 0) or 0
                 c_tok = getattr(usage, "output_tokens", 0) or 0
                 # Claude bundles thinking tokens inside output_tokens; we don't
@@ -347,6 +384,7 @@ def call_claude(
                         "thoughts_tokens": 0,
                         "timestamp": datetime.now().isoformat(),
                         "step": step or "unknown",
+                        "job_uuid": CURRENT_JOB_UUID,
                     }
                 )
 
@@ -362,12 +400,13 @@ def call_claude(
                 print(f"    ❌ {error_msg}")
                 raise RuntimeError(error_msg)
 
-            # Extract text blocks (skip thinking/tool_use blocks).
+            # Extract text blocks (skip thinking and server-tool blocks), across
+            # every continuation of a paused server-tool turn.
             final_text = []
-            for block in response.content:
-                block_type = getattr(block, "type", None)
-                if block_type == "text":
-                    final_text.append(block.text)
+            for resp in responses:
+                for block in resp.content:
+                    if getattr(block, "type", None) == "text":
+                        final_text.append(block.text)
 
             result = "".join(final_text).strip()
 
@@ -452,6 +491,13 @@ def call_claude(
 call_gemini = call_claude
 
 
+def call_model(prompt=None, pdf_file_path=None, model_type="mechanical", step=None, **kwargs):
+    """Upstream's dispatcher for its clerical stages, which routes them to
+    DeepSeek when a key is set. Here the clerical stages already run on the
+    ``mechanical`` tier, so every call goes to Claude."""
+    return call_claude(prompt, pdf_file_path, model_type=model_type, step=step, **kwargs)
+
+
 def save_output(content, filename, output_dir):
     if content is None:
         print(f"  ⚠  WARNING: content is None for {filename}. Creating empty file.")
@@ -461,16 +507,16 @@ def save_output(content, filename, output_dir):
     print(f"  ✓ Saved: {filename}")
 
 
-def load_prompt(prompt_path):
+def load_prompt(prompt_path_arg):
     """Load a prompt file and inline the ``{{OUTPUT_FORMAT}}`` resource if referenced.
 
     A relative path of the form ``prompts/<name>`` resolves against the packaged
     prompts directory (overridable via ``PRESUBMIT_PROMPTS_DIR``), so pipeline
     callers can keep using short literals regardless of cwd.
     """
-    path = Path(prompt_path)
-    if not path.is_absolute() and path.parts and path.parts[0] == "prompts":
-        path = prompts_dir().joinpath(*path.parts[1:])
+    path = Path(prompt_path_arg)
+    if not path.is_absolute():
+        path = prompt_path(path)
 
     if not path.exists():
         return f"[Error: Prompt file {path} missing]"
@@ -604,3 +650,26 @@ def merge_pdfs_python(main_pdf, supplement_source, output_dir=None):
         os.remove(output_path)
     shutil.move(temp_path, output_path)
     return output_path, page_info
+
+
+def format_page_mapping_for_prompt(page_mapping):
+    """Render the physical→printed page map for a prompt's page-number block."""
+    if isinstance(page_mapping, dict) and ("sections" in page_mapping or "confidence" in page_mapping):
+        from presubmit import pagemap
+        return pagemap.render_details(page_mapping)
+    if not page_mapping or not page_mapping.get("ranges"):
+        return "- Document structure: Check printed page numbers in the document"
+    return "\n".join(
+        f"- {r['section']}: PDF viewer pages {r['pdf_pages']} → Printed pages: {r['printed_pages']}"
+        for r in page_mapping["ranges"]
+    )
+
+
+def load_page_numbers_snippet(page_mapping):
+    """Fill ``resources/page_numbers.txt`` with this document's page map."""
+    template_path = prompt_path("resources/page_numbers.txt")
+    if not template_path.exists():
+        print(f"  ⚠  Warning: {template_path} not found. Using basic instructions.")
+        return "\n\n## PAGE NUMBERS\n- Use printed page numbers from the document, not PDF viewer page numbers"
+    template = template_path.read_text(encoding="utf-8")
+    return "\n\n" + template.replace("{{PAGE_STRUCTURE_DETAILS}}", format_page_mapping_for_prompt(page_mapping))
